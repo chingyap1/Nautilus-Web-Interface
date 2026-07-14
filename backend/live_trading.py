@@ -1,13 +1,18 @@
 """
-LiveTradingManager — Sprint 2 (S2-01 through S2-05).
+LiveTradingManager — DEPRECATED.
 
-Manages the lifecycle of live adapter connections and order routing.
-Uses NautilusTrader's built-in adapter HTTP clients — NOT custom REST code.
+This module is preserved for reference only and must NOT be used for
+execution in production.  All order routing, position management, and
+account state are the sole responsibility of the Nautilus execution agent
+(see ``live/kraken_node.py``).
 
-Architecture:
-- BinanceHttpClient + BinanceSpotAccountHttpAPI  → Nautilus Binance infrastructure
-- BybitHttpClient   + BybitAccountHttpAPI        → Nautilus Bybit infrastructure
-- LiveTradingManager wraps these for FastAPI to call
+The FastAPI backend should communicate with the Nautilus agent via
+commands/events through a durable channel (PostgreSQL outbox or Redis
+Streams), not direct exchange HTTP calls.
+
+.. deprecated:: 2026-01-01
+   Use ``live/kraken_node.py`` as the sole execution authority.
+"""
 
 State:
 - S2-01: LiveTradingManager class with full interface
@@ -21,18 +26,27 @@ import asyncio
 import json
 import logging
 import uuid
+import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# Emit a single deprecation warning at import time
+warnings.warn(
+    "live_trading.py is DEPRECATED. Do NOT use for execution. "
+    "All order routing must go through the Nautilus execution agent (live/kraken_node.py).",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 
 class BinanceAuthError(ConnectionError):
-    """Raised when Binance explicitly rejects credentials (HTTP 401/403)."""
+    """DEPRECATED: Raised when Binance explicitly rejects credentials (HTTP 401/403)."""
 
 
 class BybitAuthError(ConnectionError):
-    """Raised when Bybit explicitly rejects credentials (HTTP 401/403)."""
+    """DEPRECATED: Raised when Bybit explicitly rejects credentials (HTTP 401/403)."""
 
 
 @dataclass
@@ -75,14 +89,14 @@ class LiveTradingManager:
 
     # ── Connection state ──────────────────────────────────────────────────────
 
+    # ------------------------------------------------------------------ #
+    # All connection/routing methods below are DEPRECATED.              #
+    # The Nautilus agent is the sole authority for live state.          #
+    # ------------------------------------------------------------------ #
+
     def is_connected(self, adapter_id: Optional[str] = None) -> bool:
-        if adapter_id:
-            conn = self._connections.get(adapter_id)
-            return conn is not None and conn.status in ("connected", "connected_offline")
-        return any(
-            c.status in ("connected", "connected_offline")
-            for c in self._connections.values()
-        )
+        """DEPRECATED: Always returns False -- this manager no longer controls connections."""
+        return False
 
     def get_status(self) -> Dict[str, Any]:
         return {
@@ -140,15 +154,40 @@ class LiveTradingManager:
         return BybitAccountHttpAPI(client=client, clock=clock)
 
     async def connect_binance(self, api_key: str, api_secret: str) -> Dict[str, Any]:
-        """
-        Connect Binance Spot adapter using NautilusTrader's HTTP client.
-        Verifies credentials via _verify_binance_credentials().
-        """
-        async with self._lock:
-            if not api_key or not api_secret:
-                raise ConnectionError("api_key and api_secret are required")
+        """DEPRECATED: Raises an error -- use the Nautilus agent for live connections."""
+        raise RuntimeError(
+            "connect_binance() is DEPRECATED. "
+            "All exchange connections must be managed through the Nautilus execution agent."
+        )
 
-            spot_api = self._make_binance_spot_api(api_key, api_secret)
+    async def connect_bybit(self, api_key: str, api_secret: str) -> Dict[str, Any]:
+        """DEPRECATED: Raises an error -- use the Nautilus agent for live connections."""
+        raise RuntimeError(
+            "connect_bybit() is DEPRECATED. "
+            "All exchange connections must be managed through the Nautilus execution agent."
+        )
+
+    async def submit_order(self, order: Dict[str, Any]) -> Dict[str, Any]:
+        """DEPRECATED: Raises an error -- use the Nautilus agent for execution."""
+        raise RuntimeError(
+            "submit_order() is DEPRECATED. "
+            "All orders must be submitted via the Nautilus execution agent."
+        )
+
+    async def cancel_order(self, order_id: str, symbol: str = "BTCUSDT") -> Dict[str, Any]:
+        """DEPRECATED: Raises an error -- use the Nautilus agent for cancellations."""
+        raise RuntimeError(
+            "cancel_order() is DEPRECATED. "
+            "All order cancellations must go through the Nautilus execution agent."
+        )
+
+    async def sync_positions(self) -> List[Dict[str, Any]]:
+        """DEPRECATED: Returns empty list -- use the Nautilus agent for position data."""
+        return []
+
+    async def disconnect(self, adapter_id: str) -> Dict[str, Any]:
+        """DEPRECATED: No-op."""
+        return {"success": True}
             verified = False
             account_info: Dict[str, Any] = {}
 
@@ -532,4 +571,5 @@ async def process_order_update(update: Dict[str, Any]) -> None:
             "UPDATE orders SET status=?, filled_qty=? WHERE exchange_order_id=?",
             (db_status, executed_qty, str(exchange_order_id)),
         )
+        await db.commit()
         await db.commit()

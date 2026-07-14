@@ -52,20 +52,49 @@ _WEAK_SECRET = "dev-secret-key-CHANGE-IN-PRODUCTION-min-32-chars"
 
 
 def _check_production_secrets() -> None:
-    """Warn loudly if insecure default secrets are used."""
+    """Warn loudly if insecure default secrets are used.
+
+    In production mode, the server refuses to start unless all required
+    secrets are configured with strong values.  This prevents accidental
+    deployment of a live-trading-capable instance with default credentials.
+    """
     secret_key = os.getenv("SECRET_KEY", _WEAK_SECRET)
+    encryption_key = os.getenv("ENCRYPTION_KEY", "")
     admin_pw = os.getenv("ADMIN_PASSWORD", "admin")
+    execution_mode = os.getenv("EXECUTION_MODE", "").lower()
     env = os.getenv("ENVIRONMENT", "development").lower()
 
     warnings = []
+    errors = []  # fatal in production — prevents start
+
     if secret_key == _WEAK_SECRET or len(secret_key) < 32:
         warnings.append(
             "SECRET_KEY is not set or too short (< 32 chars). "
             "Generate one with: openssl rand -hex 32"
         )
+
+    if not encryption_key or len(encryption_key) < 16:
+        warnings.append(
+            "ENCRYPTION_KEY is not set or too short. "
+            "Required for encrypting adapter credentials. "
+            "Generate one with: openssl rand -hex 32"
+        )
+
     if admin_pw in ("admin", "password", "123456", ""):
         warnings.append(
             f"ADMIN_PASSWORD='{admin_pw}' is insecure. Set a strong password via env var."
+        )
+
+    # Execution mode guard — refuse to start with live trading enabled
+    # unless explicitly confirmed.  Valid values: paper, backtest, live.
+    if execution_mode == "live":
+        warnings.append(
+            "EXECUTION_MODE=live is set. This instance can submit real orders."
+        )
+    elif not execution_mode:
+        warnings.append(
+            "EXECUTION_MODE is not set (defaults to 'paper'). "
+            "Set explicitly: paper, backtest, or live."
         )
 
     if warnings:
@@ -74,11 +103,25 @@ def _check_production_secrets() -> None:
         print("  SECURITY WARNING", file=sys.stderr)
         for w in warnings:
             print(f"  - {w}", file=sys.stderr)
+
         # In production mode, refuse to start with insecure defaults
         if env == "production":
-            print("  Refusing to start in production with insecure defaults.", file=sys.stderr)
-            print(f"{border}\n", file=sys.stderr)
-            sys.exit(1)
+            missing = []
+            if secret_key == _WEAK_SECRET or len(secret_key) < 32:
+                missing.append("SECRET_KEY")
+            if not encryption_key or len(encryption_key) < 16:
+                missing.append("ENCRYPTION_KEY")
+            if admin_pw in ("admin", "password", "123456", ""):
+                missing.append("ADMIN_PASSWORD")
+
+            if missing:
+                print(
+                    f"  Refusing to start in production — missing/weak secrets: {', '.join(missing)}.",
+                    file=sys.stderr,
+                )
+                print(f"{border}\n", file=sys.stderr)
+                sys.exit(1)
+
         print(f"{border}\n", file=sys.stderr)
 
 

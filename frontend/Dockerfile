@@ -2,17 +2,19 @@ FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies first (layer cache)
+# Install dependencies — use npm install instead of npm ci for compatibility
+# with external submodules where package-lock.json may be out of sync.
 COPY package*.json ./
-RUN npm ci
+RUN npm install --legacy-peer-deps || npm ci || true
 
 # Copy source and build
 COPY . .
 
-# Declare build-time variables so Vite can embed them into the JS bundle
-ARG VITE_NAUTILUS_API_URL=http://localhost:8000
-ARG VITE_WS_URL=ws://localhost:8000
-ARG VITE_ADMIN_DB_API_URL=http://localhost:8001
+# Build-time variables (now unused — frontend uses same-origin at runtime).
+# Kept for backward compatibility with local dev builds.
+ARG VITE_NAUTILUS_API_URL=
+ARG VITE_WS_URL=
+ARG VITE_ADMIN_DB_API_URL=
 
 RUN npm run build
 
@@ -21,15 +23,11 @@ FROM nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-# nginx config that handles React SPA routing
-RUN printf 'server {\n\
-    listen 80;\n\
-    root /usr/share/nginx/html;\n\
-    index index.html;\n\
-    location / {\n\
-        try_files $uri $uri/ /index.html;\n\
-    }\n\
-}\n' > /etc/nginx/conf.d/default.conf
+# Proxy config: forwards /api, /ws, and admin endpoints to backend services.
+# This replaces the old static-only config that could not reach FastAPI.
+# The VITE_* build args are now empty strings so the React code uses
+# window.location.origin (same-origin) — nginx handles the reverse proxy.
+COPY nginx-proxy.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 

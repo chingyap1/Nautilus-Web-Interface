@@ -1,98 +1,76 @@
 """
 Market Data Service
 ===================
-Fetches real-time market data from the Binance public REST API (no API key
+Fetches real-time market data from the Kraken public REST API (no API key
 required).  A simple 5-second in-memory TTL cache sits in front of every
-Binance call so we stay well within the 1 200 req/min weight budget.
+Kraken call so we stay well within rate limits.
 
-Fall-back chain (most to least authoritative):
-  1. Binance API response         — live data
-  2. Cached Binance response      — if Binance is temporarily unreachable
-  3. Hard-coded default values    — last resort so the API never crashes
+Data quality indicators
+-----------------------
+ 1. ``live``   -- fresh data from Kraken (< 5 s old)
+ 2. ``stale``  -- cached Kraken data (> 5 s old, but still valid during brief outages)
+ 3. ``unavail``-- no network and no cache; the frontend must display a clear
+    "data unavailable" placeholder rather than silently using stale prices.
+
+This intentionally avoids hard-coded fallback prices because mixing venues
+(e.g. Binance prices for Kraken positions) creates incorrect P&L calculations.
 """
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-import httpx
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Supported symbols
+# Supported symbols -- mapped to Kraken pair names
 # ---------------------------------------------------------------------------
 SYMBOLS: List[str] = [
-    "BTCUSDT",
-    "ETHUSDT",
-    "BNBUSDT",
-    "SOLUSDT",
-    "ADAUSDT",
-    "DOTUSDT",
+    "XBTUSD",   # BTC / USD
+    "ETHUSD",   # ETH / USD
+    "SOLUSD",   # SOL / USD
 ]
-
-# ---------------------------------------------------------------------------
-# Hard-coded fallback values (used only when Binance is unreachable AND cache
-# is empty — i.e. on a cold start with no network).
-# ---------------------------------------------------------------------------
-_FALLBACK: Dict[str, Dict[str, Any]] = {
-    "BTCUSDT": {"price": 65420.0, "change_24h": 2.3,  "bid": 65419.0, "ask": 65421.0, "volume_24h": 30_000_000.0},
-    "ETHUSDT": {"price":  3240.0, "change_24h": -0.8, "bid":  3239.5, "ask":  3240.5, "volume_24h": 15_000_000.0},
-    "BNBUSDT": {"price":   580.0, "change_24h":  1.1, "bid":   579.8, "ask":   580.2, "volume_24h":  5_000_000.0},
-    "SOLUSDT": {"price":   175.0, "change_24h":  4.2, "bid":   174.9, "ask":   175.1, "volume_24h":  8_000_000.0},
-    "ADAUSDT": {"price":   0.485, "change_24h": -1.5, "bid":   0.4849,"ask":   0.4851,"volume_24h":  2_000_000.0},
-    "DOTUSDT": {"price":     8.2, "change_24h":  0.7, "bid":   8.19,  "ask":   8.21,  "volume_24h":  1_000_000.0},
-}
 
 # ---------------------------------------------------------------------------
 # TTL cache
 # ---------------------------------------------------------------------------
 _CACHE_TTL_SECONDS = 5
 
-# Per-symbol cache: symbol -> {"data": {...}, "fetched_at": float}
+# Per-symbol cache: symbol -> {"data": {...}, "quality": "live"|"stale", "fetched_at": float}
 _symbol_cache: Dict[str, Dict[str, Any]] = {}
 # All-symbols cache for the instruments list endpoint
 _instruments_cache: Optional[Dict[str, Any]] = None
 
-# A lock so concurrent requests don't all fire off to Binance simultaneously
+# A lock so concurrent requests don't all fire off to Kraken simultaneously
 _fetch_lock = asyncio.Lock()
 
-BINANCE_BASE = "https://api.binance.com"
+KRAKEN_BASE = "https://api.kraken.com"
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _parse_ticker(ticker: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a Binance 24hr ticker dict to our internal format."""
-    symbol = ticker["symbol"]
-    base = symbol[:-4]  # strip trailing "USDT"
+def _parse_kraken_ticker(ticker_dict: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    """Convert a Kraken Ticker response dict to our internal format.
+
+    Kraken returns arrays inside the result dict for each pair.  We normalise
+    to the same schema used by all consumers of this module.
+    """
     return {
         "symbol": symbol,
-        "base": base,
-        "quote": "USDT",
-        "exchange": "BINANCE",
-        "price": round(float(ticker["lastPrice"]), 8),
-        "change_24h": round(float(ticker["priceChangePercent"]), 4),
-        "bid": round(float(ticker["bidPrice"]), 8),
-        "ask": round(float(ticker["askPrice"]), 8),
-        "volume_24h": round(float(ticker["quoteVolume"]), 2),
+        "base": symbol[:-4] if symbol.endswith("USD") else symbol.split("USD")[0],
+        "quote": "USD",
+        "exchange": "KRAKEN",
+        "price": float(ticker_dict.get("c", [0])[0]) if ticker_dict.get("c") else 0.0,
+        "change_24h": float(ticker_dict.get("p", [0])[0]) if ticker_dict.get("p") else 0.0,
+        "bid": float(ticker_dict.get("b", [0])[0]) if ticker_dict.get("b") else 0.0,
+        "ask": float(ticker_dict.get("a", [0])[0]) if ticker_dict.get("a") else 0.0,
+        "volume_24h": float(ticker_dict.get("v", [0])[0]) if ticker_dict.get("v") else 0.0,
+        "quality": "live",
         "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _fallback_for(symbol: str) -> Dict[str, Any]:
-    """Return the hard-coded fallback for one symbol."""
-    fb = _FALLBACK.get(symbol.upper(), {"price": 100.0, "change_24h": 0.0,
-                                        "bid": 99.99, "ask": 100.01,
-                                        "volume_24h": 0.0})
-    return {
-        "symbol": symbol.upper(),
-        "base": symbol.upper()[:-4] if symbol.upper().endswith("USDT") else symbol,
-        "quote": "USDT",
-        "exchange": "BINANCE",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        **fb,
     }
 
 
@@ -111,8 +89,10 @@ async def get_instruments() -> List[Dict[str, Any]]:
     """
     Return 24-hr ticker data for all supported symbols.
 
-    Hits Binance with a single batch request using the ``symbols`` parameter
-    to keep weight usage low.  Results are cached for CACHE_TTL seconds.
+    Hits Kraken's public ticker endpoint.  Results are cached for CACHE_TTL
+    seconds.  On complete failure the cache returns stale data with a
+    ``quality`` tag so the frontend can display a clear staleness warning
+    instead of silently using unknown prices.
     """
     global _instruments_cache
 
@@ -121,73 +101,129 @@ async def get_instruments() -> List[Dict[str, Any]]:
             return _instruments_cache["data"]  # type: ignore[index]
 
         try:
-            import json as _json
-            params = {"symbols": _json.dumps(SYMBOLS)}
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
-                    f"{BINANCE_BASE}/api/v3/ticker/24hr", params=params
+                    f"{KRAKEN_BASE}/api/1/Public/Ticker",
+                    params={"pair": ",".join(SYMBOLS)},
                 )
                 resp.raise_for_status()
-                tickers = resp.json()
+                result_dict = resp.json()
 
-            result = [_parse_ticker(t) for t in tickers if t.get("symbol") in SYMBOLS]
+            # Kraken returns results in result_dict["result"] keyed by wrapped pair names
+            if not isinstance(result_dict, dict):
+                raise ValueError("Unexpected response format from Kraken")
 
-            # Preserve original symbol ordering
+            result: List[Dict[str, Any]] = []
             order = {s: i for i, s in enumerate(SYMBOLS)}
-            result.sort(key=lambda x: order.get(x["symbol"], 99))
 
-            # Update per-symbol cache as a side-effect
-            for item in result:
-                _symbol_cache[item["symbol"]] = {
-                    "data": item,
+            for symbol in SYMBOLS:
+                # Kraken wraps pairs with "X" prefix + quote currency, e.g. XXBTUSD -> X{pair}
+                kraken_key = f"{symbol[0]}{symbol}"
+                ticker_dict = result_dict.get("result", {}).get(kraken_key)
+                if not ticker_dict or not isinstance(ticker_dict, dict):
+                    continue
+
+                parsed = _parse_kraken_ticker(ticker_dict, symbol)
+                # Update per-symbol cache as a side-effect
+                _symbol_cache[symbol] = {
+                    "data": parsed,
+                    "quality": "live",
                     "fetched_at": time.monotonic(),
                 }
+                result.append(parsed)
+
+            result.sort(key=lambda x: order.get(x["symbol"], 99))
 
             _instruments_cache = {"data": result, "fetched_at": time.monotonic()}
             return result
 
-        except Exception:
-            # Binance unreachable — use cached values if available
+        except Exception as exc:
+            logger.warning("Market data fetch failed: %s", exc)
+            # Return stale cache if available (will be tagged as stale below)
             cached_items = [
                 _symbol_cache[s]["data"]
                 for s in SYMBOLS
                 if s in _symbol_cache
             ]
             if cached_items:
+                # Mark all cached items as stale
+                for item in cached_items:
+                    item["quality"] = "stale"
                 return cached_items
-            # Cold start with no network — serve fallback values
-            return [_fallback_for(s) for s in SYMBOLS]
+
+            # Cold start with no network -- mark all as unavailable
+            return [
+                {
+                    "symbol": s,
+                    "base": s[:-4] if s.endswith("USD") else s.split("USD")[0],
+                    "quote": "USD",
+                    "exchange": "KRAKEN",
+                    "price": 0.0,
+                    "change_24h": 0.0,
+                    "bid": 0.0,
+                    "ask": 0.0,
+                    "volume_24h": 0.0,
+                    "quality": "unavail",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+                for s in SYMBOLS
+            ]
 
 
 async def get_symbol_data(symbol: str) -> Dict[str, Any]:
     """
     Return 24-hr ticker data for a single symbol.
 
-    Uses the per-symbol cache; falls back to a fresh Binance request if
-    stale, then to the last known cached value, then to hard-coded defaults.
+    Uses the per-symbol cache; falls back to a fresh Kraken request if
+    stale, then to the last known cached value.  On total failure returns
+    an ``unavail`` marker -- never hard-coded prices.
     """
     upper = symbol.upper()
 
     async with _fetch_lock:
-        if _cache_is_fresh(_symbol_cache.get(upper)):
-            return _symbol_cache[upper]["data"]
+        entry = _symbol_cache.get(upper)
+        if entry and _cache_is_fresh(entry):
+            data = entry["data"]
+            data["quality"] = "live"
+            return data
 
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(
-                    f"{BINANCE_BASE}/api/v3/ticker/24hr",
-                    params={"symbol": upper},
+                    f"{KRAKEN_BASE}/api/1/Public/Ticker",
+                    params={"pair": upper},
                 )
                 resp.raise_for_status()
-                ticker = resp.json()
+                result_dict = resp.json()
 
-            data = _parse_ticker(ticker)
-            _symbol_cache[upper] = {"data": data, "fetched_at": time.monotonic()}
+            kraken_key = f"{upper[0]}{upper}"
+            ticker_dict = result_dict.get("result", {}).get(kraken_key)
+            if not ticker_dict or not isinstance(ticker_dict, dict):
+                raise ValueError(f"No ticker data for {upper}")
+
+            data = _parse_kraken_ticker(ticker_dict, upper)
+            _symbol_cache[upper] = {"data": data, "quality": "live", "fetched_at": time.monotonic()}
             return data
 
-        except Exception:
-            # Return stale cache if present
+        except Exception as exc:
+            logger.warning("Market data fetch failed for %s: %s", upper, exc)
+            # Return stale cache if available
             if upper in _symbol_cache:
-                return _symbol_cache[upper]["data"]
-            # Ultimate fallback
-            return _fallback_for(upper)
+                cached = _symbol_cache[upper]["data"].copy()
+                cached["quality"] = "stale"
+                return cached
+
+            # Total failure -- mark unavailable (never hard-coded prices)
+            return {
+                "symbol": upper,
+                "base": upper[:-4] if upper.endswith("USD") else upper.split("USD")[0],
+                "quote": "USD",
+                "exchange": "KRAKEN",
+                "price": 0.0,
+                "change_24h": 0.0,
+                "bid": 0.0,
+                "ask": 0.0,
+                "volume_24h": 0.0,
+                "quality": "unavail",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
