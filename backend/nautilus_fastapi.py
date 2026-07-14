@@ -43,6 +43,7 @@ from routers import (
 from routers.strategies import load_strategies_from_db
 from routers.components import load_component_states
 import commands as _commands
+import command_processor as _cmdproc
 from state import manager, nautilus_system
 from alert_monitor import run_alert_monitor
 
@@ -146,6 +147,8 @@ async def lifespan(app: FastAPI):
     await database.init_db()
     # Initialise commands/events tables (Phase 2 — durable command layer)
     await _commands.init()
+    # Start the async command processor (polls PENDING commands, reconciles)
+    await _cmdproc.start_processor()
     # Restore persisted strategies and component states
     await load_strategies_from_db()
     await load_component_states()
@@ -160,6 +163,8 @@ async def lifespan(app: FastAPI):
             await task
         except asyncio.CancelledError:
             pass
+    # Stop the command processor
+    await _cmdproc.stop_processor()
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
