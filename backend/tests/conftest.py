@@ -44,9 +44,15 @@ def reset_rate_limit_counters():
 
 @pytest.fixture(autouse=True)
 def reset_live_manager():
-    """Reset LiveTradingManager singleton state between tests to prevent leakage."""
+    """Reset LiveTradingManager singleton state between tests to prevent leakage.
+
+    DEPRECATED: LiveTradingManager is a no-op stub. All execution authority
+    resides in the Nautilus agent (live/kraken_node.py). This fixture exists
+    only to avoid import errors during testing.
+    """
     try:
         from state import live_manager
+        # No-op stub — _connections and _is_active are internal state only
         live_manager._connections.clear()
         live_manager._is_active = False
     except (ImportError, AttributeError):

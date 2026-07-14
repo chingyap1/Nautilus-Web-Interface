@@ -93,45 +93,54 @@ async def list_positions():
 
 @router.post("/positions/sync")
 async def sync_positions(_user: dict = Depends(get_current_user)):
-    """Sync open positions from the connected exchange."""
-    live_positions = await live_manager.sync_positions()
+    """Sync open positions from the connected exchange.
 
-    # Persist synced positions to DB
+    DEPRECATED: LiveTradingManager.sync_positions() is deprecated and returns
+    an empty list.  Position data should come from the Nautilus execution agent
+    via heartbeat events or the outbox table.
+    """
+    # live_manager.sync_positions() is deprecated — always returns []
+    live_positions: List[Dict[str, Any]] = []
+
+    # Persist synced positions to DB (no-op when empty)
     if live_positions:
         await database.save_positions(live_positions)
 
     return {
         "success": True,
-        "synced_count": len(live_positions),
-        "positions": live_positions,
+        "synced_count": 0,
+        "positions": [],
+        "note": "Position sync is deprecated. Positions are managed by the Nautilus execution agent.",
     }
 
 
 @router.post("/positions/{position_id}/close")
 async def close_position(position_id: str, _user: dict = Depends(get_current_user)):
-    # If adapter connected, send a close order to the exchange
+    """Close a position in the database.
+
+    DEPRECATED: LiveTradingManager.submit_order() is deprecated and raises
+    RuntimeError.  Position closing via exchange order must go through the
+    Nautilus execution agent.  This endpoint only updates the local DB record.
+    """
+    # live_manager.is_connected() always returns False, so this block is skipped.
+    # If it ever returns True in a future refactor, submit_order() would raise
+    # RuntimeError because it's deprecated — keep the guard explicit.
     if live_manager.is_connected():
         try:
-            # Fetch position from DB to get side/instrument
             positions = await database.list_db_positions(open_only=False)
             target = next((p for p in positions if p["id"] == position_id), None)
-            close_side = "SELL"
-            instrument = "UNKNOWN"
-            quantity = 0.0
             if target:
-                instrument = target.get("instrument", "UNKNOWN")
-                quantity = float(target.get("quantity", 0))
-                pos_side = str(target.get("side", "LONG")).upper()
-                close_side = "SELL" if "LONG" in pos_side or "BUY" in pos_side else "BUY"
-
-            await live_manager.submit_order({
-                "instrument": instrument,
-                "side": close_side,
-                "type": "MARKET",
-                "quantity": quantity,
-            })
+                logger.warning(
+                    "Position close via exchange is DEPRECATED. "
+                    "Use the Nautilus execution agent to flatten or close positions."
+                )
         except Exception as exc:
-            logger.warning("Exchange close order failed: %s", exc)
+            logger.warning("Position lookup failed: %s", exc)
 
     closed = await database.close_db_position(position_id)
-    return {"success": True, "closed_in_db": closed, "message": f"Position {position_id} closed"}
+    return {
+        "success": True,
+        "closed_in_db": closed,
+        "message": f"Position {position_id} marked as closed in local DB only. "
+                   f"Exchange orders must be managed through the Nautilus execution agent.",
+    }

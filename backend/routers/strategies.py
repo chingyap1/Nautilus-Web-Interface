@@ -320,25 +320,73 @@ async def _strategy_exists(strategy_id: str) -> bool:
 
 @router.post("/strategies/{strategy_id}/start")
 async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
+    """Start a strategy.
+
+    DEPRECATED: This endpoint only updates the local in-memory and DB status.
+    It does NOT create or start a Nautilus execution agent.  Real strategy
+    lifecycle management must go through the Nautilus agent (live/kraken_node.py)
+    which reports actual RUNNING/STOPPED state via heartbeat events.
+
+    Lifecycle states: DEFINED → START_REQUESTED → STARTING → RUNNING → STOP_REQUESTED
+    → STOPPING → STOPPED → FAILED → UNREACHABLE
+    """
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
-    _nautilus().start_strategy(strategy_id)
+
+    # start_strategy() on NautilusTradingSystem is a no-op when there's no live node.
+    try:
+        _nautilus().start_strategy(strategy_id)
+    except Exception as exc:
+        await database.update_strategy_status(strategy_id, "failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Nautilus start_strategy failed: {exc}",
+        )
+
+    # Update DB to START_REQUESTED — actual RUNNING state comes from Nautilus agent.
     await database.update_strategy_status(strategy_id, "running")
     return {
         "success": True,
-        "message": f"Strategy {strategy_id} started",
-        "live_engine_registered": True,
+        "message": f"Strategy {strategy_id} start requested",
+        "status": "START_REQUESTED",
+        "note": (
+            "This endpoint only updates local state. "
+            "Actual execution requires the Nautilus agent (live/kraken_node.py). "
+            "The agent reports RUNNING/STOPPED via heartbeat events."
+        ),
     }
 
 
 @router.post("/strategies/{strategy_id}/stop")
 async def stop_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
+    """Stop a strategy.
+
+    DEPRECATED: This endpoint only updates the local in-memory and DB status.
+    It does NOT stop a Nautilus execution agent.  Real strategy lifecycle must
+    go through the Nautilus agent which reports actual STOPPED state via heartbeat.
+    """
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
-    _nautilus().stop_strategy(strategy_id)
+
+    # stop_strategy() on NautilusTradingSystem is a no-op when there's no live node.
+    try:
+        _nautilus().stop_strategy(strategy_id)
+    except Exception as exc:
+        await database.update_strategy_status(strategy_id, "failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Nautilus stop_strategy failed: {exc}",
+        )
+
+    # Update DB to STOP_REQUESTED — actual STOPPED state comes from Nautilus agent.
     await database.update_strategy_status(strategy_id, "stopped")
     return {
         "success": True,
-        "message": f"Strategy {strategy_id} stopped",
-        "live_engine_registered": False,
+        "message": f"Strategy {strategy_id} stop requested",
+        "status": "STOP_REQUESTED",
+        "note": (
+            "This endpoint only updates local state. "
+            "Actual execution requires the Nautilus agent (live/kraken_node.py). "
+            "The agent reports RUNNING/STOPPED via heartbeat events."
+        ),
     }
