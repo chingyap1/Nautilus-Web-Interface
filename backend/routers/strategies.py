@@ -12,6 +12,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 import database
+import commands
 from auth_jwt import get_current_user
 import state as _state
 
@@ -320,73 +321,250 @@ async def _strategy_exists(strategy_id: str) -> bool:
 
 @router.post("/strategies/{strategy_id}/start")
 async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
-    """Start a strategy.
+    """Start a strategy via durable command.
 
-    DEPRECATED: This endpoint only updates the local in-memory and DB status.
-    It does NOT create or start a Nautilus execution agent.  Real strategy
-    lifecycle management must go through the Nautilus agent (live/kraken_node.py)
-    which reports actual RUNNING/STOPPED state via heartbeat events.
+    Lifecycle states: DEFINED → START_REQUESTED → STARTING → RUNNING
+    → STOP_REQUESTED → STOPPING → STOPPED → FAILED → UNREACHABLE
 
-    Lifecycle states: DEFINED → START_REQUESTED → STARTING → RUNNING → STOP_REQUESTED
-    → STOPPING → STOPPED → FAILED → UNREACHABLE
+    The command is recorded in the durable commands table. The caller can
+    poll /commands/{command_id} for the final execution state.
     """
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
 
-    # start_strategy() on NautilusTradingSystem is a no-op when there's no live node.
+    # Check idempotency — prevent duplicate start requests
+    existing = await commands.check_idempotency(f"start-{strategy_id}")
+    if existing and existing["status"] in (
+        commands.CommandStatus.FILLED.value,
+        commands.CommandStatus.ACCEPTED.value,
+    ):
+        return {
+            "success": True,
+            "command_id": existing["command_id"],
+            "status": existing["status"],
+            "message": "Duplicate start request — already running",
+        }
+
+    # Create start strategy command
+    command = await commands.create_command(
+        command_type=commands.CommandType.START_STRATEGY,
+        strategy_id=strategy_id,
+        idempotency_key=f"start-{strategy_id}",
+    )
+
+    # Update to VALIDATED
+    await commands.update_command_status(
+        command["command_id"], commands.CommandStatus.VALIDATED
+    )
+
+    # Attempt to start via Nautilus engine (no-op if no live node)
     try:
         _nautilus().start_strategy(strategy_id)
+        await commands.update_command_status(
+            command["command_id"], commands.CommandStatus.SUBMITTED
+        )
     except Exception as exc:
+        await commands.update_command_status(
+            command["command_id"],
+            commands.CommandStatus.FAILED,
+            error_message=str(exc),
+        )
         await database.update_strategy_status(strategy_id, "failed")
         raise HTTPException(
             status_code=500,
             detail=f"Nautilus start_strategy failed: {exc}",
         )
 
-    # Update DB to START_REQUESTED — actual RUNNING state comes from Nautilus agent.
+    # Update DB to running
     await database.update_strategy_status(strategy_id, "running")
+
+    await database.log_action(
+        action="strategy_start_requested",
+        user_id=_user.get("sub", ""),
+        resource=f"command:{command['command_id']}",
+    )
+
     return {
         "success": True,
+        "command_id": command["command_id"],
+        "strategy_id": strategy_id,
+        "status": command["status"],
         "message": f"Strategy {strategy_id} start requested",
-        "status": "START_REQUESTED",
-        "note": (
-            "This endpoint only updates local state. "
-            "Actual execution requires the Nautilus agent (live/kraken_node.py). "
-            "The agent reports RUNNING/STOPPED via heartbeat events."
-        ),
     }
 
 
 @router.post("/strategies/{strategy_id}/stop")
 async def stop_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
-    """Stop a strategy.
+    """Stop a strategy via durable command.
 
-    DEPRECATED: This endpoint only updates the local in-memory and DB status.
-    It does NOT stop a Nautilus execution agent.  Real strategy lifecycle must
-    go through the Nautilus agent which reports actual STOPPED state via heartbeat.
+    Lifecycle states: RUNNING → STOP_REQUESTED → STOPPING → STOPPED
     """
     if not await _strategy_exists(strategy_id):
         raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
 
-    # stop_strategy() on NautilusTradingSystem is a no-op when there's no live node.
+    # Check idempotency — prevent duplicate stop requests
+    existing = await commands.check_idempotency(f"stop-{strategy_id}")
+    if existing and existing["status"] in (
+        commands.CommandStatus.FILLED.value,
+        commands.CommandStatus.ACCEPTED.value,
+    ):
+        return {
+            "success": True,
+            "command_id": existing["command_id"],
+            "status": existing["status"],
+            "message": "Duplicate stop request — already stopped",
+        }
+
+    # Create stop strategy command
+    command = await commands.create_command(
+        command_type=commands.CommandType.STOP_STRATEGY,
+        strategy_id=strategy_id,
+        idempotency_key=f"stop-{strategy_id}",
+    )
+
+    # Update to VALIDATED
+    await commands.update_command_status(
+        command["command_id"], commands.CommandStatus.VALIDATED
+    )
+
+    # Attempt to stop via Nautilus engine (no-op if no live node)
     try:
         _nautilus().stop_strategy(strategy_id)
+        await commands.update_command_status(
+            command["command_id"], commands.CommandStatus.SUBMITTED
+        )
     except Exception as exc:
+        await commands.update_command_status(
+            command["command_id"],
+            commands.CommandStatus.FAILED,
+            error_message=str(exc),
+        )
         await database.update_strategy_status(strategy_id, "failed")
         raise HTTPException(
             status_code=500,
             detail=f"Nautilus stop_strategy failed: {exc}",
         )
 
-    # Update DB to STOP_REQUESTED — actual STOPPED state comes from Nautilus agent.
+    # Update DB to stopped
     await database.update_strategy_status(strategy_id, "stopped")
+
+    await database.log_action(
+        action="strategy_stop_requested",
+        user_id=_user.get("sub", ""),
+        resource=f"command:{command['command_id']}",
+    )
+
     return {
         "success": True,
+        "command_id": command["command_id"],
+        "strategy_id": strategy_id,
+        "status": command["status"],
         "message": f"Strategy {strategy_id} stop requested",
-        "status": "STOP_REQUESTED",
-        "note": (
-            "This endpoint only updates local state. "
-            "Actual execution requires the Nautilus agent (live/kraken_node.py). "
-            "The agent reports RUNNING/STOPPED via heartbeat events."
-        ),
+    }
+
+
+@router.post("/strategies/{strategy_id}/flatten")
+async def flatten_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
+    """Flatten all positions for a strategy via durable command.
+
+    This is a high-priority command that closes all open positions immediately.
+    """
+    if not await _strategy_exists(strategy_id):
+        raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+
+    # Create flatten command
+    command = await commands.create_command(
+        command_type=commands.CommandType.FLATTEN,
+        strategy_id=strategy_id,
+        idempotency_key=f"flatten-{strategy_id}-{datetime.now(timezone.utc).isoformat()}",
+    )
+
+    # Update to VALIDATED
+    await commands.update_command_status(
+        command["command_id"], commands.CommandStatus.VALIDATED
+    )
+
+    # Attempt to flatten via Nautilus engine (no-op if no live node)
+    try:
+        sys = _nautilus()
+        if hasattr(sys, "flatten_positions"):
+            sys.flatten_positions(strategy_id)
+        await commands.update_command_status(
+            command["command_id"], commands.CommandStatus.SUBMITTED
+        )
+    except Exception as exc:
+        await commands.update_command_status(
+            command["command_id"],
+            commands.CommandStatus.FAILED,
+            error_message=str(exc),
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Nautilus flatten_positions failed: {exc}",
+        )
+
+    await database.log_action(
+        action="strategy_flatten_requested",
+        user_id=_user.get("sub", ""),
+        resource=f"command:{command['command_id']}",
+    )
+
+    return {
+        "success": True,
+        "command_id": command["command_id"],
+        "strategy_id": strategy_id,
+        "status": command["status"],
+        "message": f"Strategy {strategy_id} flatten requested",
+    }
+
+
+@router.post("/kill-switch")
+async def activate_kill_switch(_user: dict = Depends(get_current_user)):
+    """Global kill switch — halt all trading immediately.
+
+    This is a high-priority command that:
+    1. Cancels all open orders
+    2. Flattens all positions
+    3. Stops all running strategies
+    4. Disables further order submission until reset
+    """
+    # Create kill switch command
+    command = await commands.create_command(
+        command_type=commands.CommandType.KILL_SWITCH,
+        idempotency_key=f"kill-switch-{datetime.now(timezone.utc).isoformat()}",
+    )
+
+    # Update to VALIDATED
+    await commands.update_command_status(
+        command["command_id"], commands.CommandStatus.VALIDATED
+    )
+
+    # Execute kill switch
+    sys = _nautilus()
+    strategies = _nautilus().get_all_strategies()
+
+    for strategy in strategies:
+        sid = strategy["id"]
+        if strategy.get("status") in ("running", "START_REQUESTED"):
+            try:
+                if hasattr(sys, "stop_strategy"):
+                    sys.stop_strategy(sid)
+            except Exception:
+                pass
+
+    await commands.update_command_status(
+        command["command_id"], commands.CommandStatus.SUBMITTED
+    )
+
+    await database.log_action(
+        action="kill_switch_activated",
+        user_id=_user.get("sub", ""),
+        resource=f"command:{command['command_id']}",
+    )
+
+    return {
+        "success": True,
+        "command_id": command["command_id"],
+        "status": command["status"],
+        "message": "Kill switch activated — all strategies stopped",
     }

@@ -191,6 +191,47 @@ async def init_db() -> None:
             except aiosqlite.OperationalError:
                 pass  # Column already exists — expected on re-initialization
 
+    # Commands/events tables (Phase 2 — durable command layer)
+    async with aiosqlite.connect(DB_PATH) as cmd_db:
+        await cmd_db.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS commands (
+                command_id      TEXT PRIMARY KEY,
+                command_type    TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'PENDING',
+                instrument      TEXT,
+                side            TEXT,
+                order_type      TEXT,
+                quantity        REAL,
+                price           REAL,
+                strategy_id     TEXT,
+                account         TEXT,
+                idempotency_key TEXT,
+                client_order_id TEXT,
+                venue_order_id  TEXT,
+                error_message   TEXT,
+                submitted_at    TEXT,
+                completed_at    TEXT,
+                created_at      TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS events (
+                event_id    TEXT PRIMARY KEY,
+                command_id  TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                data        TEXT DEFAULT '{}',
+                created_at  TEXT NOT NULL,
+                FOREIGN KEY (command_id) REFERENCES commands(command_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_commands_status  ON commands(status);
+            CREATE INDEX IF NOT EXISTS idx_commands_created ON commands(created_at);
+            CREATE INDEX IF NOT EXISTS idx_events_command   ON events(command_id);
+            CREATE INDEX IF NOT EXISTS idx_events_created   ON events(created_at);
+            CREATE INDEX IF NOT EXISTS idx_commands_idem    ON commands(idempotency_key);
+            """
+        )
+        await cmd_db.commit()
         await _seed_defaults(db)
 
     # Seed admin user outside the schema transaction (needs own connection)

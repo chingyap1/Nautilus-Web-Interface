@@ -42,6 +42,7 @@ from routers import (
 )
 from routers.strategies import load_strategies_from_db
 from routers.components import load_component_states
+import commands as _commands
 from state import manager, nautilus_system
 from alert_monitor import run_alert_monitor
 
@@ -143,6 +144,8 @@ async def lifespan(app: FastAPI):
     _check_production_secrets()
     # Initialise the SQLite schema + seed defaults
     await database.init_db()
+    # Initialise commands/events tables (Phase 2 — durable command layer)
+    await _commands.init()
     # Restore persisted strategies and component states
     await load_strategies_from_db()
     await load_component_states()
