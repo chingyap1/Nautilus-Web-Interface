@@ -1,13 +1,21 @@
-FROM python:3.11-slim
+# Phase 0, Finding #9: Aligned Python version with root Dockerfile (3.12-slim).
+# Uses uv for dependency resolution to match the root pyproject.toml,
+# ensuring consistent NautilusTrader versions across all services.
+FROM python:3.12-slim
+
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# Install dependencies first (layer cache)
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Install uv (the project's package manager — matches root Dockerfile)
+RUN pip install --no-cache-dir uv
 
-# Copy application code
+# Copy the full project tree so uv can resolve dependencies from pyproject.toml.
+# This ensures the NWI backend uses the same NautilusTrader version as the agent.
 COPY . .
+
+# Install runtime dependencies only (no dev extras)
+RUN uv sync --no-dev
 
 # Create data directory and non-root user for security
 RUN mkdir -p /app/data \
@@ -22,4 +30,4 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD python3 -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-CMD ["python3", "nautilus_fastapi.py"]
+CMD ["uv", "run", "python", "nautilus_fastapi.py"]
