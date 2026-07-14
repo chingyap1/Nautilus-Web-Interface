@@ -1,23 +1,30 @@
 """
-Adapters router.
+Adapters router — DEPRECATED for live execution.
 
 Supports listing all known adapters and managing connection credentials /
-status via SQLite persistence (adapter_configs table).
-Real exchange connections require a LiveTradingNode — not available in
-BacktestEngine mode.  This router validates credentials format and stores
-status so the UI reflects the correct state across restarts.
+status via SQLite persistence (adapter_configs table).  Real exchange
+connections must be managed through the Nautilus execution agent
+(live/kraken_node.py), not direct HTTP calls from this router.
+
+The connect/disconnect endpoints now only persist credential metadata
+in the database and emit deprecation warnings — they no longer create
+live exchange connections.
+
+.. deprecated:: 2026-01-01
+   Use ``live/kraken_node.py`` as the sole execution authority.
 """
 
 from datetime import datetime, timezone
 from typing import Optional
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import database
 from auth_jwt import require_admin
-from credential_utils import encrypt_credential, mask_credential
-from state import live_manager
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api", tags=["adapters"])
 
@@ -129,6 +136,7 @@ class AdapterConnectRequest(BaseModel):
 async def _enrich(adapter: dict) -> dict:
     """Merge static catalogue entry with persisted DB status."""
     cfg = await database.get_adapter_config(adapter["id"])
+    # Status is now metadata-only — no longer indicates live connection
     status = cfg["status"] if cfg else "disconnected"
     last_connected = cfg["last_connected"] if cfg else None
     has_credentials = bool(cfg and cfg.get("api_key"))
@@ -140,21 +148,14 @@ async def _enrich(adapter: dict) -> dict:
         decrypted = decrypt_credential(cfg["api_key"])
         api_key_masked = mask_credential(decrypted) if decrypted else "****"
 
-    # Connection ID from extra_config
-    extra = {}
-    try:
-        import json
-        extra = json.loads(cfg.get("extra_config", "{}")) if cfg else {}
-    except Exception:
-        pass
-
     return {
         **adapter,
         "status": status,
         "last_connected": last_connected,
         "has_credentials": has_credentials,
         "api_key_masked": api_key_masked,
-        "connection_id": extra.get("connection_id"),
+        "connection_id": None,  # No longer managed by FastAPI backend
+        "deprecated_note": "Adapter connections are deprecated. Use live/kraken_node.py.",
     }
 
 
@@ -176,8 +177,11 @@ async def get_adapter(adapter_id: str):
 @router.post("/adapters/{adapter_id}/connect")
 async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: dict = Depends(require_admin)):
     """
-    Validate credentials, encrypt, and connect adapter.
-    For Binance: activates LiveTradingNode via live_manager.
+    DEPRECATED: Store credentials in DB only.
+
+    Real exchange connections must be managed through the Nautilus execution
+    agent (live/kraken_node.py).  This endpoint no longer creates live
+    connections — it only persists credential metadata for reference.
     """
     if adapter_id not in _ADAPTER_BY_ID:
         raise HTTPException(status_code=404, detail=f"Adapter '{adapter_id}' not found")
@@ -219,59 +223,41 @@ async def connect_adapter(adapter_id: str, req: AdapterConnectRequest, _admin: d
     encrypted_key = encrypt_credential(api_key) if api_key else ""
     encrypted_secret = encrypt_credential(api_secret) if api_secret else ""
 
-    # Mark as "connecting" before attempting real connection
-    await database.upsert_adapter_config(
-        adapter_id=adapter_id,
-        status="connecting",
-        api_key=encrypted_key,
-        api_secret=encrypted_secret,
+    logger.warning(
+        "DEPRECATED: connect_adapter() for '%s' — credentials stored in DB only. "
+        "Live execution must go through the Nautilus agent (live/kraken_node.py).",
+        adapter_id,
     )
 
-    # Try to activate live trading node
-    connection_id = None
-    try:
-        if adapter_id in ("binance", "binance_futures"):
-            result = await live_manager.connect_binance(api_key, api_secret)
-            connection_id = result.get("connection_id")
-        elif adapter_id == "bybit":
-            result = await live_manager.connect_bybit(api_key, api_secret)
-            connection_id = result.get("connection_id")
-        # Other adapters: store credentials only (no live node yet)
+    await database.upsert_adapter_config(
+        adapter_id=adapter_id,
+        status="connected",  # metadata-only; no longer indicates live connection
+        api_key=encrypted_key,
+        api_secret=encrypted_secret,
+        last_connected=datetime.now(timezone.utc).isoformat(),
+    )
 
-        import json
-        extra = {"connection_id": connection_id} if connection_id else {}
-        await database.upsert_adapter_config(
-            adapter_id=adapter_id,
-            status="connected",
-            api_key=encrypted_key,
-            api_secret=encrypted_secret,
-            extra_config=extra,
-        )
-        return {
-            "success": True,
-            "adapter_id": adapter_id,
-            "status": "connected",
-            "connection_id": connection_id,
-            "message": f"Adapter '{meta['name']}' connected.",
-            "last_connected": datetime.now(timezone.utc).isoformat(),
-        }
-    except Exception as exc:
-        await database.upsert_adapter_config(
-            adapter_id=adapter_id,
-            status="error",
-            api_key=encrypted_key,
-            api_secret=encrypted_secret,
-        )
-        raise HTTPException(status_code=502, detail=f"Connection failed: {str(exc)}")
+    return {
+        "success": True,
+        "adapter_id": adapter_id,
+        "status": "connected",
+        "connection_id": None,
+        "message": f"Credentials stored for '{meta['name']}' (deprecated — no live connection created).",
+        "last_connected": datetime.now(timezone.utc).isoformat(),
+        "deprecated": True,
+    }
 
 
 @router.post("/adapters/{adapter_id}/disconnect")
 async def disconnect_adapter(adapter_id: str, _admin: dict = Depends(require_admin)):
+    """DEPRECATED: Clear adapter status from DB. No live disconnection occurs."""
     if adapter_id not in _ADAPTER_BY_ID:
         raise HTTPException(status_code=404, detail=f"Adapter '{adapter_id}' not found")
 
-    # Disconnect from live trading manager
-    await live_manager.disconnect(adapter_id)
+    logger.warning(
+        "DEPRECATED: disconnect_adapter() for '%s' — status cleared from DB only.",
+        adapter_id,
+    )
 
     await database.upsert_adapter_config(
         adapter_id=adapter_id,
@@ -282,5 +268,5 @@ async def disconnect_adapter(adapter_id: str, _admin: dict = Depends(require_adm
         "success": True,
         "adapter_id": adapter_id,
         "status": "disconnected",
-        "message": f"Adapter '{_ADAPTER_BY_ID[adapter_id]['name']}' disconnected.",
+        "message": f"Adapter '{_ADAPTER_BY_ID[adapter_id]['name']}' disconnected (deprecated).",
     }
