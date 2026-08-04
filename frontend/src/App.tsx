@@ -7,6 +7,7 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { NotificationContainer } from "./components/NotificationContainer";
+import TraderLayout from "./components/trader/TraderLayout";
 import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -52,15 +53,15 @@ function Router() {
       <Route path="/admin/api-config" component={ApiConfigPage} />
       <Route path="/admin/db-management" component={DatabaseManagementPage} />
       <Route path="/admin/users" component={UsersPage} />
-      <Route path="/trader" component={TraderDashboard} />
-      <Route path="/trader/strategies" component={StrategiesPage} />
-      <Route path="/trader/orders" component={OrdersPage} />
-      <Route path="/trader/positions" component={PositionsPage} />
-      <Route path="/trader/risk" component={RiskPage} />
-      <Route path="/trader/market-data" component={MarketDataPage} />
-      <Route path="/trader/performance" component={PerformancePage} />
-      <Route path="/trader/alerts" component={AlertsPage} />
-      <Route path="/trader/backtesting" component={BacktestingPage} />
+      <Route path="/trader"><TraderLayout><TraderDashboard /></TraderLayout></Route>
+      <Route path="/trader/strategies"><TraderLayout><StrategiesPage /></TraderLayout></Route>
+      <Route path="/trader/orders"><TraderLayout><OrdersPage /></TraderLayout></Route>
+      <Route path="/trader/positions"><TraderLayout><PositionsPage /></TraderLayout></Route>
+      <Route path="/trader/risk"><TraderLayout><RiskPage /></TraderLayout></Route>
+      <Route path="/trader/market-data"><TraderLayout><MarketDataPage /></TraderLayout></Route>
+      <Route path="/trader/performance"><TraderLayout><PerformancePage /></TraderLayout></Route>
+      <Route path="/trader/alerts"><TraderLayout><AlertsPage /></TraderLayout></Route>
+      <Route path="/trader/backtesting"><TraderLayout><BacktestingPage /></TraderLayout></Route>
       <Route path="/docs" component={DocsPage} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

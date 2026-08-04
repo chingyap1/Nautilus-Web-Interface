@@ -136,6 +136,78 @@
 
 @layer components {
   /**
+   * Trader console theme.
+   *
+   * Keep the product palette in this token block. TraderLayout scopes these
+   * values to /trader routes so admin, home, and login retain their own theme.
+   */
+  .trader-theme {
+    --trader-canvas: #07111f;
+    --trader-sidebar: #091525;
+    --trader-panel: #111c2e;
+    --trader-panel-muted: #0b1727;
+    --trader-panel-soft: #0d192a;
+    --trader-text: #cbd5e1;
+    --trader-text-muted: #64748b;
+    --trader-border: rgb(255 255 255 / 8%);
+    color-scheme: dark;
+  }
+
+  /*
+   * Compatibility bridge for legacy trader pages. These screens historically
+   * hard-coded Tailwind's light palette. Scoping the mappings to TraderLayout
+   * makes them visually consistent while they migrate to semantic tokens.
+   */
+  .trader-page > .min-h-screen {
+    min-height: auto;
+    background-color: var(--trader-canvas);
+    background-image: none;
+    color: var(--trader-text);
+  }
+
+  .trader-page :where(.bg-white) {
+    background-color: var(--trader-panel);
+  }
+
+  .trader-page :where(.bg-gray-50, .bg-slate-50) {
+    background-color: var(--trader-panel-muted);
+  }
+
+  .trader-page :where(.bg-gray-100, .bg-slate-100) {
+    background-color: var(--trader-panel-soft);
+  }
+
+  .trader-page :where(.text-gray-900, .text-gray-800, .text-gray-700, .text-slate-900, .text-slate-800, .text-slate-700) {
+    color: #f8fafc;
+  }
+
+  .trader-page :where(.text-gray-600, .text-gray-500, .text-gray-400, .text-slate-600, .text-slate-500, .text-slate-400) {
+    color: var(--trader-text-muted);
+  }
+
+  .trader-page :where(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-100, .border-slate-200, .border-slate-300) {
+    border-color: var(--trader-border);
+  }
+
+  .trader-page :where(input, select, textarea) {
+    border-color: var(--trader-border);
+    background-color: var(--trader-panel-muted);
+    color: #f8fafc;
+  }
+
+  .trader-page :where(input, textarea)::placeholder {
+    color: var(--trader-text-muted);
+  }
+
+  .trader-page :where(table) {
+    color: var(--trader-text);
+  }
+
+  .trader-page :where(.shadow, .shadow-sm, .shadow-lg, .shadow-xl, .shadow-2xl) {
+    --tw-shadow-color: rgb(2 8 23 / 24%);
+  }
+
+  /**
    * Custom container utility that centers content and adds responsive padding.
    *
    * This overrides Tailwind's default container behavior to:

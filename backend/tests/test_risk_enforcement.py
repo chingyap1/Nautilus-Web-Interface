@@ -276,9 +276,19 @@ class TestRiskMetricsEndpoint:
         """Risk metrics must include basic fields."""
         r = client.get("/api/risk/metrics")
         body = r.json()
-        # These fields should already exist
-        assert "total_exposure" in body
-        assert "total_pnl" in body
+        numeric_fields = {
+            "total_exposure",
+            "total_pnl",
+            "max_drawdown",
+            "var_1d",
+            "var_95",
+            "position_count",
+            "open_positions",
+        }
+        assert numeric_fields <= body.keys()
+        assert all(isinstance(body[field], (int, float)) for field in numeric_fields)
+        assert body["var_1d"] == body["var_95"]
+        assert body["position_count"] == body["open_positions"]
 
     def test_risk_metrics_has_daily_loss_field(self, client):
         """Risk metrics must include today's realized loss."""

@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Activity, AlertTriangle, ArrowRight, BarChart3, Bell, BookOpen, Bot, Boxes,
-  ChevronRight, CircleDollarSign, Clock3, FlaskConical, Gauge, Landmark,
-  ListOrdered, Radio, RefreshCw, ShieldCheck, TerminalSquare, WalletCards,
-  Wifi, WifiOff, type LucideIcon,
+  Activity, AlertTriangle, ArrowRight, Bot, ChevronRight, CircleDollarSign,
+  Clock3, Landmark, ListOrdered, Radio, RefreshCw, WalletCards, Wifi, WifiOff,
+  type LucideIcon,
 } from 'lucide-react';
 
 import { useWebSocket } from '@/hooks/useWebSocket';
@@ -12,27 +11,6 @@ import nautilusService, {
   type CommandSnapshot,
   type OperationsSnapshot,
 } from '@/services/nautilusService';
-
-type NavItem = { label: string; href: string; icon: LucideIcon };
-
-const NAVIGATION: Array<{ label: string; items: NavItem[] }> = [
-  { label: 'Operate', items: [
-    { label: 'Overview', href: '/trader', icon: Gauge },
-    { label: 'Strategies', href: '/trader/strategies', icon: Bot },
-    { label: 'Commands & orders', href: '/trader/orders', icon: ListOrdered },
-    { label: 'Positions', href: '/trader/positions', icon: WalletCards },
-    { label: 'Risk controls', href: '/trader/risk', icon: ShieldCheck },
-  ] },
-  { label: 'Observe', items: [
-    { label: 'Market data', href: '/trader/market-data', icon: Activity },
-    { label: 'Performance', href: '/trader/performance', icon: BarChart3 },
-    { label: 'Alerts', href: '/trader/alerts', icon: Bell },
-  ] },
-  { label: 'Research', items: [
-    { label: 'Backtesting', href: '/trader/backtesting', icon: FlaskConical },
-    { label: 'Documentation', href: '/docs', icon: BookOpen },
-  ] },
-];
 
 const STATUS_STYLES: Record<string, string> = {
   PENDING: 'border-slate-600 bg-slate-700/50 text-slate-200',
@@ -157,28 +135,8 @@ export default function TraderDashboard() {
   const executionMode = snapshot?.execution.mode ?? 'paper';
   const attentionCount = snapshot?.command_pipeline.attention_count ?? 0;
 
-  return <div className="min-h-screen bg-[#07111f] text-slate-200">
-    <div className="mx-auto grid min-h-screen max-w-[1800px] lg:grid-cols-[248px_minmax(0,1fr)]">
-      <aside className="hidden border-r border-white/7 bg-[#091525] lg:flex lg:flex-col">
-        <div className="flex h-20 items-center gap-3 border-b border-white/7 px-6">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-400 text-[#07111f] shadow-[0_0_32px_rgba(34,211,238,0.25)]"><TerminalSquare className="h-5 w-5" /></div>
-          <div><div className="font-semibold tracking-tight text-white">NAUTILUS</div><div className="text-[10px] font-medium uppercase tracking-[0.2em] text-slate-500">Control plane</div></div>
-        </div>
-        <nav className="flex-1 space-y-7 px-3 py-6">
-          {NAVIGATION.map(section => <div key={section.label}>
-            <div className="px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">{section.label}</div>
-            <div className="mt-2 space-y-1">{section.items.map(({ label, href, icon: Icon }) => <a key={href} href={href} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors ${href === '/trader' ? 'bg-cyan-400/10 text-cyan-200 ring-1 ring-cyan-400/15' : 'text-slate-500 hover:bg-white/5 hover:text-slate-200'}`}><Icon className="h-4 w-4" /><span>{label}</span></a>)}</div>
-          </div>)}
-        </nav>
-        <div className="border-t border-white/7 p-4"><div className="rounded-xl border border-white/7 bg-white/[0.025] p-3"><div className="flex items-center gap-2 text-xs font-medium text-slate-300"><ShieldCheck className="h-4 w-4 text-emerald-400" />Execution boundary</div><p className="mt-2 text-[11px] leading-relaxed text-slate-600">Only the Nautilus agent can submit to {snapshot?.execution.venue ?? 'the venue'}.</p></div></div>
-      </aside>
-
-      <main className="min-w-0">
-        <header className="border-b border-white/7 bg-[#091525]/95 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-10">
-          <div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-500"><Boxes className="h-3.5 w-3.5" /> Operations</div><h1 className="mt-1 text-xl font-semibold tracking-tight text-white">Execution overview</h1></div><div className="flex items-center gap-2"><div className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] ${modeStyle(executionMode)}`}>{executionMode} execution</div><button type="button" onClick={() => void loadSnapshot()} className="rounded-lg border border-white/10 bg-white/5 p-2.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Refresh operations snapshot"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} /></button></div></div>
-        </header>
-
-        <div className="px-5 py-7 sm:px-8 lg:px-10 lg:py-9">
+  return <div className="px-5 py-7 sm:px-8 lg:px-10 lg:py-9">
+          <div className="mb-5 flex justify-end gap-2"><div className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] ${modeStyle(executionMode)}`}>{executionMode} execution</div><button type="button" onClick={() => void loadSnapshot()} className="rounded-lg border border-white/10 bg-white/5 p-2.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Refresh operations snapshot"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} /></button></div>
           <section className={`mb-7 overflow-hidden rounded-2xl border ${executionMode === 'live' ? 'border-rose-500/30 bg-rose-500/[0.07]' : 'border-amber-500/25 bg-amber-500/[0.06]'}`}>
             <div className="flex flex-col justify-between gap-5 p-5 sm:flex-row sm:items-center"><div className="flex items-start gap-4"><div className={`mt-0.5 rounded-xl p-2.5 ${executionMode === 'live' ? 'bg-rose-400/15 text-rose-300' : 'bg-amber-400/15 text-amber-300'}`}><Landmark className="h-5 w-5" /></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold text-white">{snapshot?.execution.venue ?? 'Kraken'} · {executionMode.toUpperCase()}</h2><span className="rounded-full border border-white/10 bg-black/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Agent-owned</span></div><p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-400">FastAPI accepts durable requests. Venue submission and authoritative account state remain exclusively inside the Nautilus execution process.</p></div></div><div className="flex shrink-0 items-center gap-3 rounded-xl border border-white/8 bg-black/10 px-4 py-3"><StatusDot online={authorityOnline} /><div><div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Execution authority</div><div className={`text-sm font-semibold capitalize ${authorityOnline ? 'text-emerald-300' : 'text-amber-300'}`}>{snapshot?.execution.authority_status ?? 'checking'}</div></div></div></div>
           </section>
@@ -213,8 +171,5 @@ export default function TraderDashboard() {
           </section>
 
           <footer className="mt-7 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-600"><div className="flex items-center gap-2"><Clock3 className="h-3.5 w-3.5" /> Snapshot {formatTimestamp(snapshot?.generated_at)}</div><div>Account values are shown only when authored by a Nautilus agent heartbeat.</div></footer>
-        </div>
-      </main>
-    </div>
   </div>;
 }

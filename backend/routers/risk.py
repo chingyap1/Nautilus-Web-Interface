@@ -59,11 +59,15 @@ async def get_risk_metrics():
     return {
         "total_exposure": round(total_exposure, 2),
         "var_95": round(var_95, 2),
+        # Compatibility aliases used by the trader UI and older API clients.
+        # Keep the canonical fields above/below so this remains additive.
+        "var_1d": round(var_95, 2),
         "max_drawdown": max_drawdown,
         "sharpe_ratio": sharpe_ratio,
         "total_pnl": total_pnl,
         "total_trades": total_trades,
         "open_positions": len(open_positions),
+        "position_count": len(open_positions),
         # Sprint 3 additions
         "daily_realized_loss": round(daily_realized_loss, 2),
         "orders_today": orders_today,
