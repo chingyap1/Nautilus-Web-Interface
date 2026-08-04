@@ -6,7 +6,9 @@ Run with:
     pytest tests/ -v
 """
 
+import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -67,6 +69,46 @@ def test_engine_info(client):
     body = r.json()
     assert "trader_id" in body
     assert "is_initialized" in body
+
+
+def test_operations_snapshot_reports_agent_authority(client, tmp_path, monkeypatch):
+    heartbeat = {
+        "agent_id": "agent-btc",
+        "pair": "XBTUSD",
+        "strategy": "ma_cross",
+        "interval": "1h",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+        "status": "running",
+        "execution_mode": "paper",
+        "num_fills": 3,
+        "balance_usd": 100123.45,
+        "unrealised_pnl": 55.0,
+        "open_positions": 1,
+    }
+    (tmp_path / "heartbeat_XBTUSD.json").write_text(json.dumps(heartbeat), encoding="utf-8")
+    command_dir = tmp_path / "commands"
+    for folder in ("pending", "processing", "results"):
+        (command_dir / folder).mkdir(parents=True, exist_ok=True)
+    (command_dir / "pending" / "command.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("COMMAND_DIR", str(command_dir))
+    monkeypatch.setenv("EXECUTION_MODE", "paper")
+
+    response = client.get("/api/operations/snapshot")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["execution"] == {
+        "mode": "paper",
+        "venue": "KRAKEN",
+        "authority": "nautilus_agent",
+        "authority_status": "online",
+        "can_route_commands": True,
+    }
+    assert body["agents"][0]["source"] == "nautilus_agent"
+    assert body["agents"][0]["balance_usd"] == 100123.45
+    assert body["command_pipeline"]["pending_files"] == 1
 
 
 def test_system_metrics(client):

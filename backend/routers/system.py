@@ -1,7 +1,9 @@
 import io
 import json
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
@@ -9,6 +11,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 import database
+import commands
 from auth_jwt import get_current_user, require_admin
 from state import live_manager, nautilus_system
 from utils import normalize_order
@@ -17,6 +20,80 @@ router = APIRouter(prefix="/api", tags=["system"])
 
 _server_start_time = time.time()
 _request_counter = 0
+
+_IN_FLIGHT_COMMAND_STATES = {
+    commands.CommandStatus.PENDING.value,
+    commands.CommandStatus.VALIDATED.value,
+    commands.CommandStatus.SUBMITTED.value,
+    commands.CommandStatus.ACCEPTED.value,
+    commands.CommandStatus.PARTIALLY_FILLED.value,
+    commands.CommandStatus.CANCELLING.value,
+    commands.CommandStatus.RECONCILIATION_REQUIRED.value,
+}
+_ATTENTION_COMMAND_STATES = {
+    commands.CommandStatus.REJECTED.value,
+    commands.CommandStatus.FAILED.value,
+    commands.CommandStatus.EXPIRED.value,
+    commands.CommandStatus.RECONCILIATION_REQUIRED.value,
+}
+_HEARTBEAT_STALE_AFTER_SECONDS = 90
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _parse_timestamp(value: Any) -> Optional[datetime]:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def _load_agent_heartbeats() -> list[Dict[str, Any]]:
+    """Read agent-authored heartbeats from the shared log volume.
+
+    This is deliberately read-only: the API reports execution-agent state but
+    cannot mutate it or communicate with a venue.
+    """
+    log_dir = Path(os.environ.get("LOG_DIR", "logs"))
+    now = _utc_now()
+    agents: list[Dict[str, Any]] = []
+
+    for heartbeat_path in sorted(log_dir.glob("heartbeat_*.json")):
+        try:
+            heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+
+        last_heartbeat = _parse_timestamp(heartbeat.get("last_heartbeat"))
+        age_seconds = (
+            max(0, int((now - last_heartbeat).total_seconds()))
+            if last_heartbeat is not None
+            else None
+        )
+        heartbeat["heartbeat_age_seconds"] = age_seconds
+        heartbeat["freshness"] = (
+            "online"
+            if age_seconds is not None and age_seconds <= _HEARTBEAT_STALE_AFTER_SECONDS
+            else "stale"
+        )
+        heartbeat["source"] = "nautilus_agent"
+        agents.append(heartbeat)
+
+    return agents
+
+
+def _command_channel_counts() -> Dict[str, int]:
+    root = Path(os.environ.get("COMMAND_DIR", "logs/commands"))
+    return {
+        "pending_files": len(list((root / "pending").glob("*.json"))),
+        "processing_files": len(list((root / "processing").glob("*.json"))),
+        "result_files": len(list((root / "results").glob("*.json"))),
+    }
 
 
 def increment_request_counter() -> None:
@@ -93,6 +170,54 @@ async def get_engine_info():
         "uptime": "active",
         "live_node_active": is_live,
         "live_connections": live_status["connections"],
+    }
+
+
+@router.get("/operations/snapshot")
+async def get_operations_snapshot():
+    """Return an operator view of agent authority and durable command flow."""
+    agents = _load_agent_heartbeats()
+    execution_modes = {
+        str(agent.get("execution_mode", "paper")).strip().lower() for agent in agents
+    }
+    execution_mode = (
+        execution_modes.pop()
+        if len(execution_modes) == 1
+        else os.environ.get("EXECUTION_MODE", "paper").strip().lower() or "paper"
+    )
+    recent_commands = await commands.list_commands(limit=12)
+    in_flight_count = 0
+    for status in _IN_FLIGHT_COMMAND_STATES:
+        in_flight_count += len(await commands.list_commands(status=status, limit=1000))
+    attention_count = 0
+    for status in _ATTENTION_COMMAND_STATES:
+        attention_count += len(await commands.list_commands(status=status, limit=1000))
+
+    online_agents = sum(agent["freshness"] == "online" for agent in agents)
+    stale_agents = sum(agent["freshness"] == "stale" for agent in agents)
+    if online_agents:
+        authority_status = "online"
+    elif stale_agents:
+        authority_status = "stale"
+    else:
+        authority_status = "unavailable"
+
+    return {
+        "generated_at": _utc_now().isoformat(),
+        "execution": {
+            "mode": execution_mode,
+            "venue": "KRAKEN",
+            "authority": "nautilus_agent",
+            "authority_status": authority_status,
+            "can_route_commands": online_agents > 0,
+        },
+        "agents": agents,
+        "command_pipeline": {
+            "in_flight_count": in_flight_count,
+            "attention_count": attention_count,
+            **_command_channel_counts(),
+        },
+        "recent_commands": recent_commands,
     }
 
 

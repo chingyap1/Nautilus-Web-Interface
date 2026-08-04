@@ -78,6 +78,62 @@ export interface Position {
   ts_closed: number | null;
 }
 
+export interface AgentSnapshot {
+  agent_id: string;
+  pair: string;
+  strategy: string;
+  interval: string;
+  started_at: string;
+  last_heartbeat: string;
+  status: string;
+  execution_mode: string;
+  num_fills: number;
+  balance_usd: number;
+  unrealised_pnl: number;
+  open_positions: number;
+  heartbeat_age_seconds: number | null;
+  freshness: 'online' | 'stale';
+  source: 'nautilus_agent';
+}
+
+export interface CommandSnapshot {
+  command_id: string;
+  command_type: string;
+  status: string;
+  instrument: string | null;
+  side: string | null;
+  order_type: string | null;
+  quantity: number | null;
+  price: number | null;
+  strategy_id: string | null;
+  client_order_id: string | null;
+  venue_order_id: string | null;
+  error_message: string | null;
+  submitted_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export interface OperationsSnapshot {
+  generated_at: string;
+  execution: {
+    mode: 'paper' | 'live' | 'backtest' | string;
+    venue: string;
+    authority: 'nautilus_agent';
+    authority_status: 'online' | 'stale' | 'unavailable';
+    can_route_commands: boolean;
+  };
+  agents: AgentSnapshot[];
+  command_pipeline: {
+    in_flight_count: number;
+    attention_count: number;
+    pending_files: number;
+    processing_files: number;
+    result_files: number;
+  };
+  recent_commands: CommandSnapshot[];
+}
+
 export const nautilusService = {
   // Health check
   async healthCheck() {
@@ -96,6 +152,10 @@ export const nautilusService = {
   // Engine info
   async getEngineInfo() {
     return api.get<EngineInfo>('/api/engine/info');
+  },
+
+  async getOperationsSnapshot() {
+    return api.get<OperationsSnapshot>('/api/operations/snapshot');
   },
 
   // Instruments
@@ -202,4 +262,3 @@ export const nautilusService = {
 };
 
 export default nautilusService;
-

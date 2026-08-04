@@ -1,367 +1,220 @@
-import { useState, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { useNotification } from "@/contexts/NotificationContext";
-import nautilusService from '@/services/nautilusService';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity, AlertTriangle, ArrowRight, BarChart3, Bell, BookOpen, Bot, Boxes,
+  ChevronRight, CircleDollarSign, Clock3, FlaskConical, Gauge, Landmark,
+  ListOrdered, Radio, RefreshCw, ShieldCheck, TerminalSquare, WalletCards,
+  Wifi, WifiOff, type LucideIcon,
+} from 'lucide-react';
+
 import { useWebSocket } from '@/hooks/useWebSocket';
+import nautilusService, {
+  type AgentSnapshot,
+  type CommandSnapshot,
+  type OperationsSnapshot,
+} from '@/services/nautilusService';
 
-export default function TraderDashboard() {
-  const { success, error: showError } = useNotification();
-  const { connected: wsConnected, lastMessage } = useWebSocket();
-  const [engineInfo, setEngineInfo] = useState<any>(null);
-  const [components, setComponents] = useState<any[]>([]);
-  const [riskMetrics, setRiskMetrics] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
-  // Live counters from WebSocket (update every 3s without extra HTTP)
-  const [liveStrategiesCount, setLiveStrategiesCount] = useState<number | null>(null);
-  const [livePositionsCount, setLivePositionsCount] = useState<number | null>(null);
+type NavItem = { label: string; href: string; icon: LucideIcon };
 
-  useEffect(() => {
-    loadDashboardData();
-    // Full refresh every 30s; WebSocket keeps counts fresh in between
-    const interval = setInterval(loadDashboardData, 30_000);
-    return () => clearInterval(interval);
-  }, []);
+const NAVIGATION: Array<{ label: string; items: NavItem[] }> = [
+  { label: 'Operate', items: [
+    { label: 'Overview', href: '/trader', icon: Gauge },
+    { label: 'Strategies', href: '/trader/strategies', icon: Bot },
+    { label: 'Commands & orders', href: '/trader/orders', icon: ListOrdered },
+    { label: 'Positions', href: '/trader/positions', icon: WalletCards },
+    { label: 'Risk controls', href: '/trader/risk', icon: ShieldCheck },
+  ] },
+  { label: 'Observe', items: [
+    { label: 'Market data', href: '/trader/market-data', icon: Activity },
+    { label: 'Performance', href: '/trader/performance', icon: BarChart3 },
+    { label: 'Alerts', href: '/trader/alerts', icon: Bell },
+  ] },
+  { label: 'Research', items: [
+    { label: 'Backtesting', href: '/trader/backtesting', icon: FlaskConical },
+    { label: 'Documentation', href: '/docs', icon: BookOpen },
+  ] },
+];
 
-  // Consume WebSocket live_data push
-  useEffect(() => {
-    if (lastMessage?.type === 'live_data') {
-      if (lastMessage.engine?.strategies_count !== undefined) {
-        setLiveStrategiesCount(lastMessage.engine.strategies_count);
-      }
-      if (lastMessage.open_positions_count !== undefined) {
-        setLivePositionsCount(lastMessage.open_positions_count);
-      }
-    }
-  }, [lastMessage]);
+const STATUS_STYLES: Record<string, string> = {
+  PENDING: 'border-slate-600 bg-slate-700/50 text-slate-200',
+  VALIDATED: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
+  SUBMITTED: 'border-blue-500/30 bg-blue-500/10 text-blue-300',
+  ACCEPTED: 'border-violet-500/30 bg-violet-500/10 text-violet-300',
+  PARTIALLY_FILLED: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  FILLED: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+  CANCELLING: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+  CANCELLED: 'border-slate-600 bg-slate-700/50 text-slate-300',
+  REJECTED: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+  FAILED: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+  EXPIRED: 'border-orange-500/30 bg-orange-500/10 text-orange-300',
+  RECONCILIATION_REQUIRED: 'border-rose-500/30 bg-rose-500/10 text-rose-300',
+};
 
-  const loadDashboardData = async () => {
-    try {
-      const [engine, comps, risk] = await Promise.all([
-        nautilusService.getEngineInfo(),
-        nautilusService.getComponents(),
-        nautilusService.getRiskMetrics()
-      ]);
-      setEngineInfo(engine);
-      setComponents(comps);
-      setRiskMetrics(risk);
-      setLoading(false);
-    } catch (err) {
-      console.error('Failed to load dashboard data:', err);
-      setLoading(false);
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    const colors: Record<string, string> = {
-      'running': 'bg-green-500',
-      'active': 'bg-green-500',
-      'stopped': 'bg-red-500',
-      'paused': 'bg-yellow-500',
-      'error': 'bg-red-500'
-    };
-    return colors[status.toLowerCase()] || 'bg-gray-500';
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-gradient-to-r from-blue-600 to-blue-800 text-white">
-        <div className="container mx-auto px-4 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">📈 Nautilus Trader Panel</h1>
-              <p className="text-blue-100 mt-1">Professional algorithmic trading platform</p>
-            </div>
-            <div className="flex items-center gap-4">
-              {engineInfo && (
-                <div className="flex items-center gap-2 bg-white/10 px-4 py-2 rounded-lg">
-                  <div className={`w-2 h-2 rounded-full ${engineInfo.is_running ? 'bg-green-400' : 'bg-red-400'} animate-pulse`}></div>
-                  <div>
-                    <div className="text-xs text-blue-100">Status</div>
-                    <div className="font-semibold">{engineInfo.is_running ? 'Live' : 'Stopped'}</div>
-                  </div>
-                </div>
-              )}
-              <div className={`flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full ${wsConnected ? 'bg-green-500/20 text-green-200' : 'bg-red-500/20 text-red-200'}`}>
-                <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-400 animate-pulse' : 'bg-red-400'}`} />
-                {wsConnected ? 'WS Live' : 'WS Off'}
-              </div>
-              <Button onClick={() => window.location.href = '/'} variant="outline" className="bg-white text-blue-600">
-                ← Home
-              </Button>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="container mx-auto px-4 py-8">
-        {/* Engine Status */}
-        {engineInfo && (
-          <Card className="mb-6 border-blue-200">
-            <CardHeader className="bg-blue-50">
-              <CardTitle className="flex items-center gap-2">
-                <span className={`w-3 h-3 rounded-full ${engineInfo.is_running ? 'bg-green-500' : 'bg-red-500'} animate-pulse`}></span>
-                Trading Engine: {engineInfo.trader_id}
-              </CardTitle>
-              <CardDescription>
-                {engineInfo.engine_type} | Status: {engineInfo.status}
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <div className="text-2xl font-bold text-blue-600">
-                    {liveStrategiesCount ?? engineInfo.strategies_count ?? 0}
-                    {wsConnected && <span className="text-xs text-green-500 ml-1">●</span>}
-                  </div>
-                  <div className="text-sm text-gray-600">Active Strategies</div>
-                </div>
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <div className="text-2xl font-bold text-green-600">{components.filter(c => c.status === 'running' || c.status === 'active').length}</div>
-                  <div className="text-sm text-gray-600">Components Online</div>
-                </div>
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <div className="text-2xl font-bold text-purple-600">
-                    {livePositionsCount ?? riskMetrics?.position_count ?? 0}
-                    {wsConnected && <span className="text-xs text-green-500 ml-1">●</span>}
-                  </div>
-                  <div className="text-sm text-gray-600">Open Positions</div>
-                </div>
-                <div className="text-center p-4 bg-gray-50 rounded-lg">
-                  <div className="text-2xl font-bold text-orange-600">
-                    ${(riskMetrics?.total_exposure || 0).toLocaleString()}
-                  </div>
-                  <div className="text-sm text-gray-600">Total Exposure</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {/* Trading Features Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {/* Strategies Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>📈 Strategies</CardTitle>
-              <CardDescription>Manage trading strategies</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Create, configure, and monitor your algorithmic trading strategies.
-              </p>
-              <Button className="w-full bg-blue-600 hover:bg-blue-700" onClick={() => window.location.href = '/trader/strategies'}>
-                Manage Strategies
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Orders Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>📋 Orders</CardTitle>
-              <CardDescription>Order management</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Create, modify, and cancel orders. View order history and execution details.
-              </p>
-              <Button className="w-full bg-green-600 hover:bg-green-700" onClick={() => window.location.href = '/trader/orders'}>
-                Manage Orders
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Positions Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>💼 Positions</CardTitle>
-              <CardDescription>Position tracking</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Monitor open positions, P&L, and position sizing across all instruments.
-              </p>
-              <Button className="w-full bg-purple-600 hover:bg-purple-700" onClick={() => window.location.href = '/trader/positions'}>
-                View Positions
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Risk Management Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>⚖️ Risk Management</CardTitle>
-              <CardDescription>Risk controls & limits</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Configure risk limits, monitor exposure, and manage risk parameters.
-              </p>
-              <Button className="w-full bg-red-600 hover:bg-red-700" onClick={() => window.location.href = '/trader/risk'}>
-                Risk Dashboard
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Market Data Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>📊 Market Data</CardTitle>
-              <CardDescription>Real-time market feeds</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Subscribe to market data, view quotes, and analyze market conditions.
-              </p>
-              <Button className="w-full bg-indigo-600 hover:bg-indigo-700" onClick={() => window.location.href = '/trader/market-data'}>
-                Market Data
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Performance Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>📉 Performance</CardTitle>
-              <CardDescription>Analytics & reporting</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Analyze trading performance, view P&L reports, and track metrics.
-              </p>
-              <Button className="w-full bg-teal-600 hover:bg-teal-700" onClick={() => window.location.href = '/trader/performance'}>
-                View Analytics
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Alerts Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>🔔 Alerts</CardTitle>
-              <CardDescription>Notifications & alerts</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Configure price alerts, system notifications, and trading signals.
-              </p>
-              <Button className="w-full bg-yellow-600 hover:bg-yellow-700" onClick={() => window.location.href = '/trader/alerts'}>
-                Manage Alerts
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Backtesting Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>🔬 Backtesting</CardTitle>
-              <CardDescription>Strategy testing</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Test strategies on historical data and analyze backtest results.
-              </p>
-              <Button className="w-full bg-cyan-600 hover:bg-cyan-700" onClick={() => window.location.href = '/trader/backtesting'}>
-                Run Backtest
-              </Button>
-            </CardContent>
-          </Card>
-
-          {/* Documentation Card */}
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardHeader>
-              <CardTitle>📚 Documentation</CardTitle>
-              <CardDescription>Help & guides</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-gray-600 mb-4">
-                Access trading guides, API documentation, and tutorials.
-              </p>
-              <Button className="w-full bg-gray-600 hover:bg-gray-700" onClick={() => window.location.href = '/docs'}>
-                View Docs
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* System Components Status */}
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle>🔧 System Components</CardTitle>
-            <CardDescription>Real-time component status</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {components.map((component) => (
-                <div key={component.id} className="flex items-center gap-3 p-3 border rounded-lg">
-                  <div className={`w-3 h-3 rounded-full ${getStatusColor(component.status)}`}></div>
-                  <div className="flex-1">
-                    <div className="font-semibold text-sm">{component.name}</div>
-                    <div className="text-xs text-gray-500">{component.type}</div>
-                  </div>
-                  <div className="text-xs px-2 py-1 bg-gray-100 rounded">
-                    {component.status}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Risk Metrics */}
-        {riskMetrics && (
-          <Card className="mt-6 border-orange-200">
-            <CardHeader className="bg-orange-50">
-              <CardTitle>⚠️ Risk Metrics</CardTitle>
-              <CardDescription>Current risk exposure and limits</CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                <div className="text-center">
-                  <div className="text-lg font-bold text-orange-600">
-                    ${(riskMetrics.total_exposure || 0).toLocaleString()}
-                  </div>
-                  <div className="text-xs text-gray-600">Total Exposure</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-lg font-bold text-blue-600">
-                    ${(riskMetrics.margin_used || 0).toLocaleString()}
-                  </div>
-                  <div className="text-xs text-gray-600">Margin Used</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-lg font-bold text-green-600">
-                    ${(riskMetrics.margin_available || 0).toLocaleString()}
-                  </div>
-                  <div className="text-xs text-gray-600">Available Margin</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-lg font-bold text-red-600">
-                    {(riskMetrics.max_drawdown || 0).toFixed(2)}%
-                  </div>
-                  <div className="text-xs text-gray-600">Max Drawdown</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-lg font-bold text-purple-600">
-                    ${(riskMetrics.var_1d || 0).toLocaleString()}
-                  </div>
-                  <div className="text-xs text-gray-600">VaR (1D)</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-lg font-bold text-indigo-600">
-                    {riskMetrics.position_count || 0}
-                  </div>
-                  <div className="text-xs text-gray-600">Positions</div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </main>
-    </div>
-  );
+function formatMoney(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency', currency: 'USD', maximumFractionDigits: 2,
+  }).format(value);
 }
 
+function formatTimestamp(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-US', {
+    month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).format(date);
+}
+
+function heartbeatAge(agent: AgentSnapshot): string {
+  if (agent.heartbeat_age_seconds == null) return 'Unknown';
+  return agent.heartbeat_age_seconds < 60
+    ? `${agent.heartbeat_age_seconds}s ago`
+    : `${Math.floor(agent.heartbeat_age_seconds / 60)}m ago`;
+}
+
+function modeStyle(mode: string): string {
+  if (mode === 'live') return 'border-rose-400/40 bg-rose-500/15 text-rose-200';
+  if (mode === 'paper') return 'border-amber-400/40 bg-amber-500/15 text-amber-100';
+  return 'border-cyan-400/40 bg-cyan-500/15 text-cyan-100';
+}
+
+function StatusDot({ online }: { online: boolean }) {
+  return <span className="relative flex h-2.5 w-2.5">
+    {online && <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-50" />}
+    <span className={`relative inline-flex h-2.5 w-2.5 rounded-full ${online ? 'bg-emerald-400' : 'bg-slate-500'}`} />
+  </span>;
+}
+
+function MetricCard({ label, value, detail, icon: Icon, tone = 'cyan' }: {
+  label: string; value: string; detail: string; icon: LucideIcon;
+  tone?: 'cyan' | 'emerald' | 'amber' | 'violet';
+}) {
+  const tones = {
+    cyan: 'bg-cyan-400/10 text-cyan-300 ring-cyan-400/20',
+    emerald: 'bg-emerald-400/10 text-emerald-300 ring-emerald-400/20',
+    amber: 'bg-amber-400/10 text-amber-300 ring-amber-400/20',
+    violet: 'bg-violet-400/10 text-violet-300 ring-violet-400/20',
+  };
+  return <div className="rounded-2xl border border-white/8 bg-[#111c2e] p-5 shadow-[0_18px_50px_rgba(2,8,23,0.16)]">
+    <div className="flex items-start justify-between gap-4">
+      <div><p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{label}</p><p className="mt-3 text-2xl font-semibold tracking-tight text-white">{value}</p></div>
+      <div className={`rounded-xl p-2.5 ring-1 ${tones[tone]}`}><Icon className="h-5 w-5" /></div>
+    </div>
+    <p className="mt-4 text-xs text-slate-500">{detail}</p>
+  </div>;
+}
+
+function CommandStatus({ status }: { status: string }) {
+  return <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold tracking-wide ${STATUS_STYLES[status] ?? STATUS_STYLES.PENDING}`}>
+    {status.replaceAll('_', ' ')}
+  </span>;
+}
+
+function CommandRow({ command }: { command: CommandSnapshot }) {
+  const descriptor = command.instrument || command.strategy_id || 'Account-wide';
+  return <tr className="border-t border-white/6 transition-colors hover:bg-white/[0.025]">
+    <td className="px-5 py-4"><div className="font-medium capitalize text-slate-100">{command.command_type.replaceAll('_', ' ')}</div><div className="mt-1 font-mono text-[11px] text-slate-600">{command.command_id.slice(0, 12)}</div></td>
+    <td className="px-5 py-4"><div className="text-sm text-slate-300">{descriptor}</div>{(command.side || command.quantity) && <div className="mt-1 text-xs text-slate-500">{[command.side, command.quantity, command.order_type].filter(Boolean).join(' · ')}</div>}</td>
+    <td className="px-5 py-4"><CommandStatus status={command.status} /></td>
+    <td className="px-5 py-4 text-right text-xs text-slate-500">{formatTimestamp(command.created_at)}</td>
+  </tr>;
+}
+
+export default function TraderDashboard() {
+  const { connected: wsConnected, reconnect } = useWebSocket();
+  const [snapshot, setSnapshot] = useState<OperationsSnapshot | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadSnapshot = useCallback(async (quiet = false) => {
+    if (!quiet) setRefreshing(true);
+    try {
+      setSnapshot(await nautilusService.getOperationsSnapshot());
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'The operations snapshot is unavailable.');
+    } finally {
+      setLoading(false); setRefreshing(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadSnapshot(true);
+    const timer = window.setInterval(() => void loadSnapshot(true), 5_000);
+    return () => window.clearInterval(timer);
+  }, [loadSnapshot]);
+
+  const totals = useMemo(() => (snapshot?.agents ?? []).reduce((total, agent) => ({
+    balance: total.balance + agent.balance_usd,
+    pnl: total.pnl + agent.unrealised_pnl,
+    positions: total.positions + agent.open_positions,
+    fills: total.fills + agent.num_fills,
+  }), { balance: 0, pnl: 0, positions: 0, fills: 0 }), [snapshot]);
+
+  const authorityOnline = snapshot?.execution.authority_status === 'online';
+  const hasAuthoritativeState = (snapshot?.agents.length ?? 0) > 0;
+  const executionMode = snapshot?.execution.mode ?? 'paper';
+  const attentionCount = snapshot?.command_pipeline.attention_count ?? 0;
+
+  return <div className="min-h-screen bg-[#07111f] text-slate-200">
+    <div className="mx-auto grid min-h-screen max-w-[1800px] lg:grid-cols-[248px_minmax(0,1fr)]">
+      <aside className="hidden border-r border-white/7 bg-[#091525] lg:flex lg:flex-col">
+        <div className="flex h-20 items-center gap-3 border-b border-white/7 px-6">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-cyan-400 text-[#07111f] shadow-[0_0_32px_rgba(34,211,238,0.25)]"><TerminalSquare className="h-5 w-5" /></div>
+          <div><div className="font-semibold tracking-tight text-white">NAUTILUS</div><div className="text-[10px] font-medium uppercase tracking-[0.2em] text-slate-500">Control plane</div></div>
+        </div>
+        <nav className="flex-1 space-y-7 px-3 py-6">
+          {NAVIGATION.map(section => <div key={section.label}>
+            <div className="px-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-600">{section.label}</div>
+            <div className="mt-2 space-y-1">{section.items.map(({ label, href, icon: Icon }) => <a key={href} href={href} className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm transition-colors ${href === '/trader' ? 'bg-cyan-400/10 text-cyan-200 ring-1 ring-cyan-400/15' : 'text-slate-500 hover:bg-white/5 hover:text-slate-200'}`}><Icon className="h-4 w-4" /><span>{label}</span></a>)}</div>
+          </div>)}
+        </nav>
+        <div className="border-t border-white/7 p-4"><div className="rounded-xl border border-white/7 bg-white/[0.025] p-3"><div className="flex items-center gap-2 text-xs font-medium text-slate-300"><ShieldCheck className="h-4 w-4 text-emerald-400" />Execution boundary</div><p className="mt-2 text-[11px] leading-relaxed text-slate-600">Only the Nautilus agent can submit to {snapshot?.execution.venue ?? 'the venue'}.</p></div></div>
+      </aside>
+
+      <main className="min-w-0">
+        <header className="border-b border-white/7 bg-[#091525]/95 px-5 py-4 backdrop-blur-xl sm:px-8 lg:px-10">
+          <div className="flex flex-wrap items-center justify-between gap-4"><div><div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.18em] text-slate-500"><Boxes className="h-3.5 w-3.5" /> Operations</div><h1 className="mt-1 text-xl font-semibold tracking-tight text-white">Execution overview</h1></div><div className="flex items-center gap-2"><div className={`rounded-lg border px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] ${modeStyle(executionMode)}`}>{executionMode} execution</div><button type="button" onClick={() => void loadSnapshot()} className="rounded-lg border border-white/10 bg-white/5 p-2.5 text-slate-400 hover:bg-white/10 hover:text-white" aria-label="Refresh operations snapshot"><RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} /></button></div></div>
+        </header>
+
+        <div className="px-5 py-7 sm:px-8 lg:px-10 lg:py-9">
+          <section className={`mb-7 overflow-hidden rounded-2xl border ${executionMode === 'live' ? 'border-rose-500/30 bg-rose-500/[0.07]' : 'border-amber-500/25 bg-amber-500/[0.06]'}`}>
+            <div className="flex flex-col justify-between gap-5 p-5 sm:flex-row sm:items-center"><div className="flex items-start gap-4"><div className={`mt-0.5 rounded-xl p-2.5 ${executionMode === 'live' ? 'bg-rose-400/15 text-rose-300' : 'bg-amber-400/15 text-amber-300'}`}><Landmark className="h-5 w-5" /></div><div><div className="flex flex-wrap items-center gap-2"><h2 className="font-semibold text-white">{snapshot?.execution.venue ?? 'Kraken'} · {executionMode.toUpperCase()}</h2><span className="rounded-full border border-white/10 bg-black/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400">Agent-owned</span></div><p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-400">FastAPI accepts durable requests. Venue submission and authoritative account state remain exclusively inside the Nautilus execution process.</p></div></div><div className="flex shrink-0 items-center gap-3 rounded-xl border border-white/8 bg-black/10 px-4 py-3"><StatusDot online={authorityOnline} /><div><div className="text-[10px] uppercase tracking-[0.16em] text-slate-500">Execution authority</div><div className={`text-sm font-semibold capitalize ${authorityOnline ? 'text-emerald-300' : 'text-amber-300'}`}>{snapshot?.execution.authority_status ?? 'checking'}</div></div></div></div>
+          </section>
+
+          {error && <div className="mb-7 flex items-start gap-3 rounded-xl border border-rose-500/25 bg-rose-500/10 px-4 py-3 text-sm text-rose-200"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><div><span className="font-semibold">Control-plane snapshot unavailable.</span> {error} Cached values, if shown, may be stale.</div></div>}
+
+          <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <MetricCard label="Agent balance" value={hasAuthoritativeState ? formatMoney(totals.balance) : '—'} detail="Source · Nautilus heartbeat" icon={CircleDollarSign} />
+            <MetricCard label="Unrealised P&L" value={hasAuthoritativeState ? formatMoney(totals.pnl) : '—'} detail="Source · Nautilus heartbeat" icon={Activity} tone={totals.pnl >= 0 ? 'emerald' : 'amber'} />
+            <MetricCard label="Open positions" value={hasAuthoritativeState ? String(totals.positions) : '—'} detail="Agent-reported account state" icon={WalletCards} tone="violet" />
+            <MetricCard label="Commands in flight" value={snapshot ? String(snapshot.command_pipeline.in_flight_count) : '—'} detail={`${snapshot?.command_pipeline.processing_files ?? 0} currently claimed by agent`} icon={Radio} tone="amber" />
+          </section>
+
+          <section className="mt-7 grid gap-6 xl:grid-cols-[minmax(0,1.65fr)_minmax(340px,0.85fr)]">
+            <div className="overflow-hidden rounded-2xl border border-white/8 bg-[#111c2e]">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/7 px-5 py-4"><div><h2 className="font-semibold text-white">Durable command flow</h2><p className="mt-1 text-xs text-slate-500">Requested state is not execution state. Agent results advance each command.</p></div><a href="/trader/orders" className="flex items-center gap-1 text-xs font-medium text-cyan-300 hover:text-cyan-200">Open command center <ChevronRight className="h-3.5 w-3.5" /></a></div>
+              <div className="overflow-x-auto"><table className="w-full min-w-[680px]"><thead><tr className="text-left text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-600"><th className="px-5 py-3">Command</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">State</th><th className="px-5 py-3 text-right">Created</th></tr></thead><tbody>{snapshot?.recent_commands.map(command => <CommandRow key={command.command_id} command={command} />)}</tbody></table>{!loading && (snapshot?.recent_commands.length ?? 0) === 0 && <div className="border-t border-white/6 px-5 py-12 text-center"><ListOrdered className="mx-auto h-7 w-7 text-slate-700" /><p className="mt-3 text-sm text-slate-400">No durable commands recorded</p><p className="mt-1 text-xs text-slate-600">New order and lifecycle requests will appear here.</p></div>}</div>
+            </div>
+
+            <div className="space-y-6">
+              <div className="rounded-2xl border border-white/8 bg-[#111c2e] p-5"><div className="flex items-center justify-between"><div><h2 className="font-semibold text-white">Execution agents</h2><p className="mt-1 text-xs text-slate-500">Agent-authored heartbeat state</p></div><Bot className="h-5 w-5 text-cyan-300" /></div><div className="mt-5 space-y-3">{snapshot?.agents.map(agent => <div key={agent.agent_id} className="rounded-xl border border-white/7 bg-[#0b1727] p-4"><div className="flex items-start justify-between gap-3"><div className="flex items-center gap-3"><StatusDot online={agent.freshness === 'online'} /><div><div className="text-sm font-semibold text-slate-100">{agent.agent_id}</div><div className="mt-0.5 text-xs text-slate-500">{agent.pair} · {agent.strategy} · {agent.interval}</div></div></div><span className={`text-xs font-medium capitalize ${agent.freshness === 'online' ? 'text-emerald-300' : 'text-amber-300'}`}>{agent.freshness}</span></div><div className="mt-4 grid grid-cols-3 gap-2 border-t border-white/6 pt-3 text-center"><div><div className="text-sm font-semibold text-white">{agent.open_positions}</div><div className="text-[10px] uppercase tracking-wide text-slate-600">Positions</div></div><div><div className="text-sm font-semibold text-white">{agent.num_fills}</div><div className="text-[10px] uppercase tracking-wide text-slate-600">Fills</div></div><div><div className="text-sm font-semibold text-white">{heartbeatAge(agent)}</div><div className="text-[10px] uppercase tracking-wide text-slate-600">Heartbeat</div></div></div></div>)}{!loading && (snapshot?.agents.length ?? 0) === 0 && <div className="rounded-xl border border-dashed border-white/10 px-4 py-8 text-center"><WifiOff className="mx-auto h-6 w-6 text-slate-700" /><p className="mt-3 text-sm text-slate-400">No agent heartbeat found</p><p className="mt-1 text-xs leading-relaxed text-slate-600">Commands remain durable, but execution cannot be confirmed.</p></div>}</div></div>
+              <div className={`rounded-2xl border p-5 ${attentionCount > 0 ? 'border-rose-500/25 bg-rose-500/[0.07]' : 'border-white/8 bg-[#111c2e]'}`}><div className="flex items-center gap-3"><AlertTriangle className={`h-5 w-5 ${attentionCount > 0 ? 'text-rose-300' : 'text-emerald-300'}`} /><div><div className="text-sm font-semibold text-white">{attentionCount > 0 ? `${attentionCount} command${attentionCount === 1 ? '' : 's'} need attention` : 'No command exceptions'}</div><div className="mt-1 text-xs text-slate-500">Rejected, failed, expired, or reconciliation-required states</div></div></div></div>
+            </div>
+          </section>
+
+          <section className="mt-7 rounded-2xl border border-white/8 bg-[#0d192a] p-5 sm:p-6">
+            <div className="flex flex-wrap items-center justify-between gap-4"><div><h2 className="font-semibold text-white">Authority path</h2><p className="mt-1 text-xs text-slate-500">Every trading action follows one observable ownership boundary.</p></div><div className="flex items-center gap-2 text-xs text-slate-500">{wsConnected ? <Wifi className="h-4 w-4 text-emerald-400" /> : <WifiOff className="h-4 w-4 text-rose-400" />} Event stream {wsConnected ? 'connected' : 'offline'}{!wsConnected && <button type="button" onClick={reconnect} className="ml-1 text-cyan-300 hover:text-cyan-200">Reconnect</button>}</div></div>
+            <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto_1fr_auto_1fr_auto_1fr] md:items-center">{[
+              ['React / API', 'Request intent'], ['Durable command', 'Validated & persisted'],
+              ['Nautilus agent', 'Risk & execution authority'], [snapshot?.execution.venue ?? 'Venue', 'Orders, account & fills'],
+            ].map(([title, subtitle], index) => <div className="contents" key={title}><div className={`rounded-xl border p-4 ${index === 2 ? 'border-cyan-400/25 bg-cyan-400/[0.07]' : 'border-white/7 bg-white/[0.025]'}`}><div className="text-sm font-semibold text-slate-100">{title}</div><div className="mt-1 text-xs text-slate-600">{subtitle}</div></div>{index < 3 && <ArrowRight className="hidden h-4 w-4 text-slate-700 md:block" />}</div>)}</div>
+          </section>
+
+          <footer className="mt-7 flex flex-wrap items-center justify-between gap-3 text-[11px] text-slate-600"><div className="flex items-center gap-2"><Clock3 className="h-3.5 w-3.5" /> Snapshot {formatTimestamp(snapshot?.generated_at)}</div><div>Account values are shown only when authored by a Nautilus agent heartbeat.</div></footer>
+        </div>
+      </main>
+    </div>
+  </div>;
+}
