@@ -225,22 +225,21 @@ async def update_command_status(
     """Update a command's status and append an event record."""
     now = datetime.now(timezone.utc).isoformat()
 
-    updates: List[str] = [f"status='{status.value}'"]
-    params: List[Any] = [status.value, command_id]
+    updates: List[str] = ["status=?"]
+    params: List[Any] = [status.value]
 
     if error_message is not None:
         updates.append("error_message=?")
         params.append(error_message)
 
     if status in (
-        CommandStatus.SUBMITTED,
         CommandStatus.ACCEPTED,
         CommandStatus.FILLED,
         CommandStatus.PARTIALLY_FILLED,
         CommandStatus.CANCELLED,
         CommandStatus.EXPIRED,
         CommandStatus.FAILED,
-        CommandStatus.RECONCILIATION_REQUIRED,
+        CommandStatus.REJECTED,
     ):
         updates.append("completed_at=?")
         params.append(now)

@@ -43,6 +43,19 @@ def reset_rate_limit_counters():
 
 
 @pytest.fixture(autouse=True)
+async def isolated_database(tmp_path, monkeypatch):
+    """Route database and command modules to one writable DB per test."""
+    import commands
+    import database
+
+    path = tmp_path / "nautilus-test.db"
+    monkeypatch.setattr(database, "DB_PATH", path)
+    monkeypatch.setattr(commands, "DB_PATH", path)
+    await database.init_db()
+    await commands.init_commands_db()
+
+
+@pytest.fixture(autouse=True)
 def reset_live_manager():
     """Reset LiveTradingManager singleton state between tests to prevent leakage.
 

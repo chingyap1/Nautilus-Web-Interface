@@ -176,6 +176,7 @@ async def init_db() -> None:
             """
         )
         await db.commit()
+        await _seed_defaults(db)
 
         # Idempotent column migrations
         for migration in [
@@ -232,7 +233,6 @@ async def init_db() -> None:
             """
         )
         await cmd_db.commit()
-        await _seed_defaults(db)
 
     # Seed admin user outside the schema transaction (needs own connection)
     admin_pw = os.getenv("ADMIN_PASSWORD", "admin")

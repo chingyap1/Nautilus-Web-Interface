@@ -319,6 +319,20 @@ async def _strategy_exists(strategy_id: str) -> bool:
     return any(r["id"] == strategy_id for r in rows)
 
 
+async def _strategy_instrument(strategy_id: str) -> str:
+    """Resolve the configured instrument without treating UI state as live state."""
+    rows = await database.list_strategies()
+    for row in rows:
+        if row["id"] == strategy_id:
+            try:
+                return json.loads(row.get("config") or "{}").get(
+                    "instrument_id", "EUR/USD.SIM"
+                )
+            except (TypeError, json.JSONDecodeError):
+                return "EUR/USD.SIM"
+    raise HTTPException(status_code=404, detail=f"Strategy {strategy_id} not found")
+
+
 @router.post("/strategies/{strategy_id}/start")
 async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_user)):
     """Start a strategy via durable command.
@@ -357,26 +371,8 @@ async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_use
         command["command_id"], commands.CommandStatus.VALIDATED
     )
 
-    # Attempt to start via Nautilus engine (no-op if no live node)
-    try:
-        _nautilus().start_strategy(strategy_id)
-        await commands.update_command_status(
-            command["command_id"], commands.CommandStatus.SUBMITTED
-        )
-    except Exception as exc:
-        await commands.update_command_status(
-            command["command_id"],
-            commands.CommandStatus.FAILED,
-            error_message=str(exc),
-        )
-        await database.update_strategy_status(strategy_id, "failed")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Nautilus start_strategy failed: {exc}",
-        )
-
-    # Update DB to running
-    await database.update_strategy_status(strategy_id, "running")
+    # Only the execution agent may transition this strategy to RUNNING.
+    await database.update_strategy_status(strategy_id, "start_requested")
 
     await database.log_action(
         action="strategy_start_requested",
@@ -388,7 +384,7 @@ async def start_strategy(strategy_id: str, _user: dict = Depends(get_current_use
         "success": True,
         "command_id": command["command_id"],
         "strategy_id": strategy_id,
-        "status": command["status"],
+        "status": commands.CommandStatus.VALIDATED.value,
         "message": f"Strategy {strategy_id} start requested",
     }
 
@@ -427,26 +423,8 @@ async def stop_strategy(strategy_id: str, _user: dict = Depends(get_current_user
         command["command_id"], commands.CommandStatus.VALIDATED
     )
 
-    # Attempt to stop via Nautilus engine (no-op if no live node)
-    try:
-        _nautilus().stop_strategy(strategy_id)
-        await commands.update_command_status(
-            command["command_id"], commands.CommandStatus.SUBMITTED
-        )
-    except Exception as exc:
-        await commands.update_command_status(
-            command["command_id"],
-            commands.CommandStatus.FAILED,
-            error_message=str(exc),
-        )
-        await database.update_strategy_status(strategy_id, "failed")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Nautilus stop_strategy failed: {exc}",
-        )
-
-    # Update DB to stopped
-    await database.update_strategy_status(strategy_id, "stopped")
+    # Only the execution agent may transition this strategy to STOPPED.
+    await database.update_strategy_status(strategy_id, "stop_requested")
 
     await database.log_action(
         action="strategy_stop_requested",
@@ -458,7 +436,7 @@ async def stop_strategy(strategy_id: str, _user: dict = Depends(get_current_user
         "success": True,
         "command_id": command["command_id"],
         "strategy_id": strategy_id,
-        "status": command["status"],
+        "status": commands.CommandStatus.VALIDATED.value,
         "message": f"Strategy {strategy_id} stop requested",
     }
 
@@ -476,6 +454,7 @@ async def flatten_strategy(strategy_id: str, _user: dict = Depends(get_current_u
     command = await commands.create_command(
         command_type=commands.CommandType.FLATTEN,
         strategy_id=strategy_id,
+        instrument=await _strategy_instrument(strategy_id),
         idempotency_key=f"flatten-{strategy_id}-{datetime.now(timezone.utc).isoformat()}",
     )
 
@@ -483,25 +462,6 @@ async def flatten_strategy(strategy_id: str, _user: dict = Depends(get_current_u
     await commands.update_command_status(
         command["command_id"], commands.CommandStatus.VALIDATED
     )
-
-    # Attempt to flatten via Nautilus engine (no-op if no live node)
-    try:
-        sys = _nautilus()
-        if hasattr(sys, "flatten_positions"):
-            sys.flatten_positions(strategy_id)
-        await commands.update_command_status(
-            command["command_id"], commands.CommandStatus.SUBMITTED
-        )
-    except Exception as exc:
-        await commands.update_command_status(
-            command["command_id"],
-            commands.CommandStatus.FAILED,
-            error_message=str(exc),
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"Nautilus flatten_positions failed: {exc}",
-        )
 
     await database.log_action(
         action="strategy_flatten_requested",
@@ -513,7 +473,7 @@ async def flatten_strategy(strategy_id: str, _user: dict = Depends(get_current_u
         "success": True,
         "command_id": command["command_id"],
         "strategy_id": strategy_id,
-        "status": command["status"],
+        "status": commands.CommandStatus.VALIDATED.value,
         "message": f"Strategy {strategy_id} flatten requested",
     }
 
@@ -539,23 +499,6 @@ async def activate_kill_switch(_user: dict = Depends(get_current_user)):
         command["command_id"], commands.CommandStatus.VALIDATED
     )
 
-    # Execute kill switch
-    sys = _nautilus()
-    strategies = _nautilus().get_all_strategies()
-
-    for strategy in strategies:
-        sid = strategy["id"]
-        if strategy.get("status") in ("running", "START_REQUESTED"):
-            try:
-                if hasattr(sys, "stop_strategy"):
-                    sys.stop_strategy(sid)
-            except Exception:
-                pass
-
-    await commands.update_command_status(
-        command["command_id"], commands.CommandStatus.SUBMITTED
-    )
-
     await database.log_action(
         action="kill_switch_activated",
         user_id=_user.get("sub", ""),
@@ -565,6 +508,6 @@ async def activate_kill_switch(_user: dict = Depends(get_current_user)):
     return {
         "success": True,
         "command_id": command["command_id"],
-        "status": command["status"],
-        "message": "Kill switch activated — all strategies stopped",
+        "status": commands.CommandStatus.VALIDATED.value,
+        "message": "Kill switch accepted and awaiting execution-agent confirmation",
     }

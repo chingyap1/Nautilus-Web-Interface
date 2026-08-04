@@ -130,11 +130,11 @@ class TestUpdateCommandStatus:
             instrument="BTC/USD.KRAKEN",
         )
         for status in (
-            CommandStatus.ACCEPTED,
             CommandStatus.FILLED,
             CommandStatus.CANCELLED,
             CommandStatus.EXPIRED,
             CommandStatus.FAILED,
+            CommandStatus.REJECTED,
         ):
             updated = await commands.update_command_status(
                 cmd["command_id"], status

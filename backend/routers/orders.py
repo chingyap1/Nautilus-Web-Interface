@@ -134,13 +134,8 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
             client_order_id=db_order["id"],
         )
 
-    # 5. Update to SUBMITTED
-    await commands.update_command_status(
-        command["command_id"], commands.CommandStatus.SUBMITTED
-    )
-
     await database.log_action(
-        action="order_submitted",
+        action="order_command_accepted",
         user_id=_user.get("sub", ""),
         resource=f"command:{command['command_id']}",
         details=f"instrument={req.instrument} side={req.side} qty={req.quantity} cmd={command['command_id']}",
@@ -148,7 +143,7 @@ async def create_order(req: OrderCreateRequest, _user: dict = Depends(get_curren
 
     return OrderResponse(
         command_id=command["command_id"],
-        status=command["status"],
+        status=commands.CommandStatus.VALIDATED.value,
         instrument=command["instrument"],
         side=command["side"],
         order_type=command["order_type"],
@@ -212,19 +207,17 @@ async def cancel_command(command_id: str, _user: dict = Depends(get_current_user
         command_type=commands.CommandType.CANCEL_ORDER,
         instrument=command["instrument"],
         strategy_id=command["strategy_id"],
+        account=command.get("account"),
         idempotency_key=f"cancel-{command_id}",
+    )
+    await commands.update_order_ids(
+        cancel_cmd["command_id"],
+        client_order_id=command.get("client_order_id"),
+        venue_order_id=command.get("venue_order_id"),
     )
     await commands.update_command_status(
         cancel_cmd["command_id"], commands.CommandStatus.VALIDATED
     )
-    await commands.update_command_status(
-        cancel_cmd["command_id"], commands.CommandStatus.SUBMITTED
-    )
-
-    # Also cancel in legacy orders table if present
-    if command.get("client_order_id"):
-        await database.cancel_order(command["client_order_id"])
-
     await database.log_action(
         action="order_cancel_requested",
         user_id=_user.get("sub", ""),
@@ -235,7 +228,7 @@ async def cancel_command(command_id: str, _user: dict = Depends(get_current_user
         "success": True,
         "command_id": cancel_cmd["command_id"],
         "original_command_id": command_id,
-        "status": cancel_cmd["status"],
+        "status": commands.CommandStatus.VALIDATED.value,
     }
 
 
