@@ -150,61 +150,22 @@
     --trader-text: #cbd5e1;
     --trader-text-muted: #64748b;
     --trader-border: rgb(255 255 255 / 8%);
+    --background: var(--trader-canvas);
+    --foreground: var(--trader-text);
+    --card: var(--trader-panel);
+    --card-foreground: #f8fafc;
+    --popover: var(--trader-panel);
+    --popover-foreground: #f8fafc;
+    --secondary: var(--trader-panel-muted);
+    --secondary-foreground: var(--trader-text);
+    --muted: var(--trader-panel-muted);
+    --muted-foreground: var(--trader-text-muted);
+    --accent: rgb(34 211 238 / 10%);
+    --accent-foreground: #a5f3fc;
+    --border: var(--trader-border);
+    --input: rgb(255 255 255 / 12%);
+    --ring: #22d3ee;
     color-scheme: dark;
-  }
-
-  /*
-   * Compatibility bridge for legacy trader pages. These screens historically
-   * hard-coded Tailwind's light palette. Scoping the mappings to TraderLayout
-   * makes them visually consistent while they migrate to semantic tokens.
-   */
-  .trader-page > .min-h-screen {
-    min-height: auto;
-    background-color: var(--trader-canvas);
-    background-image: none;
-    color: var(--trader-text);
-  }
-
-  .trader-page :where(.bg-white) {
-    background-color: var(--trader-panel);
-  }
-
-  .trader-page :where(.bg-gray-50, .bg-slate-50) {
-    background-color: var(--trader-panel-muted);
-  }
-
-  .trader-page :where(.bg-gray-100, .bg-slate-100) {
-    background-color: var(--trader-panel-soft);
-  }
-
-  .trader-page :where(.text-gray-900, .text-gray-800, .text-gray-700, .text-slate-900, .text-slate-800, .text-slate-700) {
-    color: #f8fafc;
-  }
-
-  .trader-page :where(.text-gray-600, .text-gray-500, .text-gray-400, .text-slate-600, .text-slate-500, .text-slate-400) {
-    color: var(--trader-text-muted);
-  }
-
-  .trader-page :where(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-100, .border-slate-200, .border-slate-300) {
-    border-color: var(--trader-border);
-  }
-
-  .trader-page :where(input, select, textarea) {
-    border-color: var(--trader-border);
-    background-color: var(--trader-panel-muted);
-    color: #f8fafc;
-  }
-
-  .trader-page :where(input, textarea)::placeholder {
-    color: var(--trader-text-muted);
-  }
-
-  .trader-page :where(table) {
-    color: var(--trader-text);
-  }
-
-  .trader-page :where(.shadow, .shadow-sm, .shadow-lg, .shadow-xl, .shadow-2xl) {
-    --tw-shadow-color: rgb(2 8 23 / 24%);
   }
 
   /**
@@ -242,6 +203,67 @@
       max-width: 1280px; /* Standard content width */
     }
   }
+}
+
+/*
+ * Legacy trader-page compatibility bridge.
+ *
+ * This intentionally remains outside a cascade layer. Tailwind's generated
+ * utilities live in its `utilities` layer, so unlayered declarations reliably
+ * override old hard-coded light utilities while this bridge is scoped beneath
+ * TraderLayout. New trader UI should use semantic tokens instead.
+ */
+.trader-page > .min-h-screen {
+  min-height: auto;
+  background-color: var(--trader-canvas);
+  background-image: none;
+  color: var(--trader-text);
+}
+
+.trader-page :where(.bg-white) {
+  background-color: var(--trader-panel);
+}
+
+.trader-page :where(.bg-gray-50, .bg-slate-50) {
+  background-color: var(--trader-panel-muted);
+}
+
+.trader-page :where(.bg-gray-100, .bg-gray-200, .bg-slate-100, .bg-slate-200) {
+  background-color: var(--trader-panel-soft);
+}
+
+.trader-page :where(.text-gray-900, .text-gray-800, .text-gray-700, .text-slate-900, .text-slate-800, .text-slate-700) {
+  color: #f8fafc;
+}
+
+.trader-page :where(.text-gray-600, .text-gray-500, .text-gray-400, .text-slate-600, .text-slate-500, .text-slate-400) {
+  color: var(--trader-text-muted);
+}
+
+.trader-page :where(.border-gray-100, .border-gray-200, .border-gray-300, .border-slate-100, .border-slate-200, .border-slate-300) {
+  border-color: var(--trader-border);
+}
+
+.trader-page :where(input, select, textarea) {
+  border-color: var(--trader-border);
+  background-color: var(--trader-panel-muted);
+  color: #f8fafc;
+}
+
+.trader-page :where(input, textarea)::placeholder {
+  color: var(--trader-text-muted);
+}
+
+.trader-page :where(table) {
+  color: var(--trader-text);
+}
+
+.trader-page :where(.hover\:bg-gray-50:hover, .hover\:bg-gray-100:hover, .hover\:bg-slate-50:hover, .hover\:bg-slate-100:hover) {
+  background-color: rgb(255 255 255 / 5%);
+}
+
+.trader-page :where(.shadow, .shadow-sm, .shadow-lg, .shadow-xl, .shadow-2xl) {
+  --tw-shadow-color: rgb(2 8 23 / 24%);
 }
 
 /* Notification animations */
