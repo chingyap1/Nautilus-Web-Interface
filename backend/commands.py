@@ -29,10 +29,6 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-import aiosqlite
-
-from database import DB_PATH
-
 
 # ---------------------------------------------------------------------------
 # Command types and statuses
@@ -108,6 +104,9 @@ class OrderType(str, Enum):
 
 async def init_commands_db() -> None:
     """Add command/event tables if they don't exist."""
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(
             """
@@ -190,6 +189,9 @@ async def create_command(
         "created_at": now,
     }
 
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
@@ -228,6 +230,9 @@ async def check_idempotency(idempotency_key: str) -> Optional[Dict[str, Any]]:
     Check if a command with this idempotency_key has already been validated.
     Returns the existing command if found, None otherwise.
     """
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
@@ -277,6 +282,9 @@ async def update_command_status(
     sql = f"UPDATE commands SET {', '.join(updates)} WHERE command_id=?"
     params.append(command_id)
 
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(sql, params)
         await db.commit()
@@ -316,6 +324,9 @@ async def update_order_ids(
     params.append(command_id)
     sql = f"UPDATE commands SET {', '.join(parts)} WHERE command_id=?"
 
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(sql, params)
         await db.commit()
@@ -328,6 +339,9 @@ async def update_order_ids(
 
 
 async def get_command(command_id: str) -> Optional[Dict[str, Any]]:
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("SELECT * FROM commands WHERE command_id=?", (command_id,)) as cur:
@@ -358,6 +372,9 @@ async def list_commands(
     sql = f"SELECT * FROM commands {where} ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
 
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(sql, params) as cur:
@@ -372,6 +389,9 @@ async def list_commands(
 
 async def _append_event(command_id: str, event_type: str, data: Dict[str, Any]) -> None:
     """Append an event record for a command."""
+    import aiosqlite
+    from database import DB_PATH
+
     event_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
@@ -387,6 +407,9 @@ async def _append_event(command_id: str, event_type: str, data: Dict[str, Any]) 
 
 async def get_command_events(command_id: str) -> List[Dict[str, Any]]:
     """Return all events for a command, ordered chronologically."""
+    import aiosqlite
+    from database import DB_PATH
+
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
