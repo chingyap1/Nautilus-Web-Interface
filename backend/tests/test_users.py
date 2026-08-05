@@ -70,6 +70,99 @@ def test_create_user_invalid_role_returns_422(client):
     assert r.status_code == 422
 
 
+def test_create_service_principal_approver_returns_422(client):
+    """Service principals cannot be assigned approver role (D6.4)."""
+    r = client.post(
+        "/api/users",
+        json={
+            "username": "svc-test",
+            "password": "secret123",
+            "role": "approver",
+            "principal_type": "service",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_create_service_principal_admin_returns_422(client):
+    """Service principals cannot be assigned admin role (D6.4)."""
+    r = client.post(
+        "/api/users",
+        json={
+            "username": "svc-admin",
+            "password": "secret123",
+            "role": "admin",
+            "principal_type": "service",
+        },
+    )
+    assert r.status_code == 422
+
+
+def test_create_service_principal_operator_succeeds(client):
+    """Service principals can be assigned operator role (D6.4)."""
+    r = client.post(
+        "/api/users",
+        json={
+            "username": "svc-supervisor",
+            "password": "secret123",
+            "role": "operator",
+            "principal_type": "service",
+        },
+    )
+    assert r.status_code == 201
+    body = r.json()
+    assert body["user"]["principal_type"] == "service"
+    assert body["user"]["role"] == "operator"
+
+
+def test_create_service_principal_viewer_succeeds(client):
+    """Service principals can be assigned viewer role (D6.4)."""
+    r = client.post(
+        "/api/users",
+        json={
+            "username": "svc-viewer",
+            "password": "secret123",
+            "role": "viewer",
+            "principal_type": "service",
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["user"]["principal_type"] == "service"
+
+
+def test_create_human_approver_succeeds(client):
+    """Human principals can be assigned approver role (D6.4)."""
+    r = client.post(
+        "/api/users",
+        json={
+            "username": "human-approver",
+            "password": "secret123",
+            "role": "approver",
+            "principal_type": "human",
+        },
+    )
+    assert r.status_code == 201
+    assert r.json()["user"]["role"] == "approver"
+    assert r.json()["user"]["principal_type"] == "human"
+
+
+def test_list_users_includes_principal_type(client):
+    """List users should include principal_type field."""
+    r = client.get("/api/users")
+    assert r.status_code == 200
+    for user in r.json()["users"]:
+        assert "principal_type" in user
+
+
+def test_seeded_admin_is_human_principal(client):
+    """The seeded admin user must be a human principal (D6.4)."""
+    r = client.get("/api/users")
+    assert r.status_code == 200
+    admin_user = [u for u in r.json()["users"] if u["username"] == "admin"][0]
+    assert admin_user["principal_type"] == "human"
+    assert admin_user["role"] == "admin"
+
+
 # ── Delete user ──────────────────────────────────────────────────────────────
 
 def test_delete_user_removes_from_list(client):

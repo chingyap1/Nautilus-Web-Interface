@@ -84,7 +84,38 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(_
 
 
 async def require_admin(payload: dict = Depends(get_current_user)) -> dict:
-    """Dependency: verify JWT and require admin role. Raises 403 if not admin."""
+    """Dependency: verify JWT and require admin role (human principal only).
+
+    Raises 403 if the caller is not admin or is a service principal.
+    """
     if payload.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin role required")
+    if payload.get("principal_type") == "service":
+        raise HTTPException(status_code=403, detail="Service principals cannot hold admin role")
+    return payload
+
+
+async def require_approver(payload: dict = Depends(get_current_user)) -> dict:
+    """Dependency: verify JWT and require approver role (human principal only).
+
+    Service principals are structurally barred from approver (D6.4).
+    Raises 403 if the caller is not an approver or is a service principal.
+    """
+    if payload.get("principal_type") == "service":
+        raise HTTPException(status_code=403, detail="Service principals cannot approve")
+    if payload.get("role") != "approver":
+        raise HTTPException(status_code=403, detail="Approver role required")
+    return payload
+
+
+async def require_operator(payload: dict = Depends(get_current_user)) -> dict:
+    """Dependency: verify JWT and require operator role or higher.
+
+    operator, approver, and admin are all permitted.
+    Service principals with operator role are permitted (they can create
+    proposals) but cannot hold approver/admin (enforced at creation).
+    """
+    role = payload.get("role")
+    if role not in ("operator", "approver", "admin"):
+        raise HTTPException(status_code=403, detail="Operator role required")
     return payload

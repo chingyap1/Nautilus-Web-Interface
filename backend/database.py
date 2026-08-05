@@ -140,7 +140,8 @@ async def init_db() -> None:
                 id              TEXT PRIMARY KEY,
                 username        TEXT UNIQUE NOT NULL,
                 hashed_password TEXT NOT NULL,
-                role            TEXT NOT NULL DEFAULT 'trader',
+                role            TEXT NOT NULL DEFAULT 'viewer',
+                principal_type  TEXT NOT NULL DEFAULT 'human',
                 is_active       INTEGER NOT NULL DEFAULT 1,
                 created_at      TEXT NOT NULL,
                 totp_secret     TEXT,
@@ -247,6 +248,7 @@ async def init_db() -> None:
             "ALTER TABLE orders ADD COLUMN exchange_order_id TEXT",
             "ALTER TABLE users ADD COLUMN totp_secret TEXT",
             "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'human'",
         ]:
             try:
                 await db.execute(migration)
@@ -859,27 +861,63 @@ async def list_users() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT id, username, role, is_active, created_at FROM users ORDER BY created_at"
+            "SELECT id, username, role, principal_type, is_active, created_at FROM users ORDER BY created_at"
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
 
 
-async def create_user(username: str, hashed_password: str, role: str = "trader") -> Dict[str, Any]:
-    """Insert a new user; raises ValueError if username already exists."""
+# Valid roles and principal types (D6.4)
+VALID_ROLES = frozenset({"viewer", "operator", "approver", "admin", "trader"})
+VALID_PRINCIPAL_TYPES = frozenset({"human", "service"})
+# Roles that a service principal structurally cannot hold (D6.4)
+SERVICE_FORBIDDEN_ROLES = frozenset({"approver", "admin"})
+
+
+def _validate_principal_role(principal_type: str, role: str) -> None:
+    """Validate that the principal_type/role combination is allowed (D6.4).
+
+    Raises ValueError if the combination is invalid.
+    """
+    if principal_type not in VALID_PRINCIPAL_TYPES:
+        raise ValueError(f"Invalid principal_type '{principal_type}'")
+    if role not in VALID_ROLES:
+        raise ValueError(f"Invalid role '{role}'")
+    if principal_type == "service" and role in SERVICE_FORBIDDEN_ROLES:
+        raise ValueError(
+            f"Service principals cannot hold role '{role}' "
+            f"(forbidden: {sorted(SERVICE_FORBIDDEN_ROLES)})"
+        )
+
+
+async def create_user(
+    username: str,
+    hashed_password: str,
+    role: str = "viewer",
+    principal_type: str = "human",
+) -> Dict[str, Any]:
+    """Insert a new user; raises ValueError if username exists or principal/role invalid."""
+    _validate_principal_role(principal_type, role)
     user_id = f"USR-{uuid.uuid4().hex[:8].upper()}"
     created_at = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         try:
             await db.execute(
-                """INSERT INTO users (id, username, hashed_password, role, is_active, created_at)
-                   VALUES (?, ?, ?, ?, 1, ?)""",
-                (user_id, username, hashed_password, role, created_at),
+                """INSERT INTO users (id, username, hashed_password, role, principal_type, is_active, created_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (user_id, username, hashed_password, role, principal_type, created_at),
             )
             await db.commit()
         except aiosqlite.IntegrityError:
             raise ValueError(f"Username '{username}' already exists")
-    return {"id": user_id, "username": username, "role": role, "is_active": 1, "created_at": created_at}
+    return {
+        "id": user_id,
+        "username": username,
+        "role": role,
+        "principal_type": principal_type,
+        "is_active": 1,
+        "created_at": created_at,
+    }
 
 
 async def delete_user(user_id: str) -> bool:
@@ -910,7 +948,7 @@ async def seed_admin_user(admin_password: str) -> None:
     if not existing:
         hashed = _bcrypt.hashpw(admin_password.encode(), _bcrypt.gensalt()).decode()
         try:
-            await create_user("admin", hashed, role="admin")
+            await create_user("admin", hashed, role="admin", principal_type="human")
         except ValueError:
             pass  # Race condition: another process inserted admin first
 
