@@ -5,7 +5,7 @@ Imported by all routers so they all operate on the same engine instance.
 
 import os
 from pathlib import Path
-from typing import List
+
 from fastapi import WebSocket
 
 backend_dir = Path(__file__).parent
@@ -21,25 +21,37 @@ class ConnectionManager:
     """Manages active WebSocket connections and broadcasts messages."""
 
     def __init__(self) -> None:
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, owner_id: str) -> None:
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = owner_id
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+        self.active_connections.pop(websocket, None)
 
-    async def broadcast(self, message: dict) -> None:
+    async def _send(self, connections: list[WebSocket], message: dict) -> None:
         disconnected = []
-        for connection in self.active_connections:
+        for connection in connections:
             try:
                 await connection.send_json(message)
             except Exception:
                 disconnected.append(connection)
-        for conn in disconnected:
-            self.disconnect(conn)
+        for connection in disconnected:
+            self.disconnect(connection)
+
+    async def broadcast(self, message: dict) -> None:
+        await self._send(list(self.active_connections), message)
+
+    async def send_to(self, owner_id: str, message: dict) -> None:
+        await self._send(
+            [
+                connection
+                for connection, connection_owner in self.active_connections.items()
+                if connection_owner == owner_id
+            ],
+            message,
+        )
 
 
 manager = ConnectionManager()

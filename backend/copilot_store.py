@@ -22,6 +22,17 @@ TRANSITIONS = {
     "IDEA": ("SPECIFICATION", "specification"),
     "SPECIFICATION": ("DRAFT", "strategy_draft"),
 }
+TASK_TRANSITIONS = {
+    "pending": {"running", "cancelled"},
+    "running": {"running", "succeeded", "failed", "cancelled"},
+    "succeeded": set(),
+    "failed": set(),
+    "cancelled": set(),
+}
+
+
+class TaskProgressConflict(ValueError):
+    pass
 
 
 def _now() -> str:
@@ -427,3 +438,145 @@ async def list_transitions(workspace_id: str) -> list[dict[str, Any]]:
             (workspace_id,),
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
+
+
+async def list_tasks(workspace_id: str) -> list[dict[str, Any]]:
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM copilot_tasks WHERE workspace_id = ? ORDER BY updated_at DESC",
+            (workspace_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def get_task(task_id: str, owner_id: str) -> dict[str, Any] | None:
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT t.* FROM copilot_tasks t
+               JOIN copilot_workspaces w ON w.id = t.workspace_id
+               WHERE t.id = ? AND w.owner_id = ?""",
+            (task_id, owner_id),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def create_task(
+    workspace_id: str, title: str, owner_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    now = _now()
+    task = {
+        "id": _id("TSK"),
+        "workspace_id": workspace_id,
+        "title": title,
+        "status": "pending",
+        "progress": 0,
+        "message": "Task created",
+        "created_by": owner_id,
+        "created_at": now,
+        "updated_at": now,
+    }
+    event = {
+        "id": _id("TSE"),
+        "task_id": task["id"],
+        "sequence": 0,
+        "status": "pending",
+        "progress": 0,
+        "message": "Task created",
+        "created_by": owner_id,
+        "created_at": now,
+    }
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            await db.execute(
+                """INSERT INTO copilot_tasks
+                   (id, workspace_id, title, status, progress, message, created_by, created_at, updated_at)
+                   VALUES (:id, :workspace_id, :title, :status, :progress, :message, :created_by, :created_at, :updated_at)""",
+                task,
+            )
+            await db.execute(
+                """INSERT INTO copilot_task_events
+                   (id, task_id, sequence, status, progress, message, created_by, created_at)
+                   VALUES (:id, :task_id, :sequence, :status, :progress, :message, :created_by, :created_at)""",
+                event,
+            )
+            await db.execute(
+                "UPDATE copilot_workspaces SET updated_at = ? WHERE id = ?",
+                (now, workspace_id),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+    return task, event
+
+
+async def list_task_events(task_id: str) -> list[dict[str, Any]]:
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM copilot_task_events WHERE task_id = ? ORDER BY sequence",
+            (task_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
+async def append_task_event(
+    task_id: str, status: str, progress: int, message: str, owner_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await db.execute("BEGIN IMMEDIATE")
+        now = _now()
+        async with db.execute("SELECT * FROM copilot_tasks WHERE id = ?", (task_id,)) as cursor:
+            row = await cursor.fetchone()
+        if not row:
+            await db.rollback()
+            raise TaskProgressConflict("Copilot task no longer exists")
+        current = dict(row)
+        if status not in TASK_TRANSITIONS[current["status"]]:
+            await db.rollback()
+            raise TaskProgressConflict(
+                f"Task cannot transition from {current['status']} to {status}"
+            )
+        if progress < current["progress"]:
+            await db.rollback()
+            raise TaskProgressConflict("Task progress cannot decrease")
+        if status == "succeeded" and progress != 100:
+            await db.rollback()
+            raise TaskProgressConflict("Succeeded tasks must report 100 percent progress")
+        async with db.execute(
+            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM copilot_task_events WHERE task_id = ?",
+            (task_id,),
+        ) as cursor:
+            sequence = (await cursor.fetchone())[0]
+        event = {
+            "id": _id("TSE"),
+            "task_id": task_id,
+            "sequence": sequence,
+            "status": status,
+            "progress": progress,
+            "message": message,
+            "created_by": owner_id,
+            "created_at": now,
+        }
+        await db.execute(
+            """INSERT INTO copilot_task_events
+               (id, task_id, sequence, status, progress, message, created_by, created_at)
+               VALUES (:id, :task_id, :sequence, :status, :progress, :message, :created_by, :created_at)""",
+            event,
+        )
+        await db.execute(
+            "UPDATE copilot_tasks SET status = ?, progress = ?, message = ?, updated_at = ? WHERE id = ?",
+            (status, progress, message, now, task_id),
+        )
+        await db.execute(
+            "UPDATE copilot_workspaces SET updated_at = ? WHERE id = ?",
+            (now, current["workspace_id"]),
+        )
+        await db.commit()
+    current.update(status=status, progress=progress, message=message, updated_at=now)
+    return current, event

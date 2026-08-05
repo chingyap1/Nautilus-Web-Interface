@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { Bot, CheckCircle2, FileText, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Activity, Bot, CheckCircle2, FileText, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { useWebSocket } from '@/hooks/useWebSocket';
 import {
   copilotService,
   type CopilotApproval,
@@ -9,6 +10,7 @@ import {
   type CopilotArtifactKind,
   type CopilotArtifactRevision,
   type CopilotEligibility,
+  type CopilotTask,
   type CopilotWorkspace,
 } from '@/services/copilotService';
 
@@ -24,12 +26,14 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [conversations, setConversations] = useState<CopilotConversation[]>([]);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [artifacts, setArtifacts] = useState<CopilotArtifact[]>([]);
+  const [tasks, setTasks] = useState<CopilotTask[]>([]);
   const [reviewState, setReviewState] = useState<Record<string, { revision: CopilotArtifactRevision; decision?: CopilotApproval }>>({});
   const [eligibility, setEligibility] = useState<CopilotEligibility | null>(null);
   const [artifactKind, setArtifactKind] = useState<CopilotArtifactKind>('specification');
   const [artifactTitle, setArtifactTitle] = useState('Strategy specification');
   const [artifactContent, setArtifactContent] = useState('');
   const [approvalReason, setApprovalReason] = useState('Reviewed and ready for the next advisory stage.');
+  const [taskTitle, setTaskTitle] = useState('Prepare validation evidence');
   const [title, setTitle] = useState('New strategy idea');
   const [strategyId, setStrategyId] = useState('');
   const [draft, setDraft] = useState('');
@@ -37,10 +41,20 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [busy, setBusy] = useState(false);
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const selectionVersion = useRef(0);
+  const taskSequences = useRef<Record<string, number>>({});
+  const { connected: progressConnected, lastMessage } = useWebSocket();
 
   useEffect(() => {
     void refreshWorkspaces();
   }, []);
+
+  useEffect(() => {
+    if (lastMessage?.type !== 'copilot_task_progress' || lastMessage.workspace_id !== workspace?.id || !lastMessage.task || !lastMessage.event) return;
+    const { task, event } = lastMessage;
+    if ((taskSequences.current[task.id] ?? -1) >= event.sequence) return;
+    taskSequences.current[task.id] = event.sequence;
+    setTasks((current) => [task, ...current.filter((item) => item.id !== task.id)]);
+  }, [lastMessage, workspace?.id]);
 
   async function refreshWorkspaces() {
     try {
@@ -55,20 +69,23 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   async function selectWorkspace(next: CopilotWorkspace) {
     const version = ++selectionVersion.current;
     setWorkspace(next);
+    taskSequences.current = {};
     setConversation(null);
     setConversations([]);
     setMessages([]);
     setArtifacts([]);
+    setTasks([]);
     setEligibility(null);
     setError(null);
     setLoadingWorkspace(true);
     try {
-      const [data, loadedArtifacts, lifecycle] = await Promise.all([copilotService.listConversations(next.id), copilotService.listArtifacts(next.id), copilotService.lifecycle(next.id)]);
+      const [data, loadedArtifacts, loadedTasks, lifecycle] = await Promise.all([copilotService.listConversations(next.id), copilotService.listArtifacts(next.id), copilotService.listTasks(next.id), copilotService.lifecycle(next.id)]);
       let active = data.conversations[0];
       if (!active) active = (await copilotService.createConversation(next.id)).conversation;
       if (version !== selectionVersion.current) return;
       setConversations(data.conversations.length ? data.conversations : [active]);
       setArtifacts(loadedArtifacts.artifacts);
+      setTasks(loadedTasks.tasks);
       await refreshReviewState(loadedArtifacts.artifacts);
       setEligibility(lifecycle.eligibility);
       await selectConversation(active, version);
@@ -205,6 +222,18 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not advance lifecycle'); } finally { setBusy(false); }
   }
 
+  async function createTask(event: FormEvent) {
+    event.preventDefault();
+    if (!workspace || !taskTitle.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      const created = await copilotService.createTask(workspace.id, taskTitle.trim());
+      taskSequences.current[created.task.id] = created.event.sequence;
+      setTasks((current) => [created.task, ...current]);
+      setTaskTitle('');
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not create task'); } finally { setBusy(false); }
+  }
+
   return (
     <section className="mb-8 overflow-hidden rounded-2xl border border-cyan-400/20 bg-[var(--trader-panel)] shadow-2xl shadow-cyan-950/20">
       <div className="border-b border-white/8 bg-gradient-to-r from-cyan-400/10 via-transparent to-blue-500/10 p-5 sm:p-7">
@@ -259,6 +288,11 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
               return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span><div className="flex gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button></div></div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</p>}</div>;
             })}</div>
             {artifacts.length > 0 && <input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} aria-label="Approval reason" maxLength={2000} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-white" />}
+          </section>}
+          {workspace && !loadingWorkspace && <section className="border-b border-white/8 p-4 sm:p-5" aria-label="Task progress">
+            <div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">O1c task progress</p><p className="mt-1 text-xs text-slate-500">Durable advisory work queue · live updates {progressConnected ? 'connected' : 'reconnecting'}</p></div><Activity className={`h-4 w-4 ${progressConnected ? 'text-emerald-300' : 'text-amber-300'}`} /></div>
+            <form onSubmit={createTask} className="mt-3 flex flex-col gap-2 sm:flex-row"><input value={taskTitle} onChange={(event) => setTaskTitle(event.target.value)} aria-label="Task title" placeholder="Add a bounded advisory task" maxLength={200} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><button disabled={busy || !taskTitle.trim()} className="rounded-lg border border-cyan-400/35 px-3 py-2 text-sm font-semibold text-cyan-200 disabled:opacity-40"><Plus className="mr-1 inline h-4 w-4" /> Add task</button></form>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">{tasks.map((task) => <div key={task.id} className="rounded-lg border border-white/8 bg-white/[0.02] p-3"><div className="flex items-center justify-between gap-2"><span className="truncate text-sm font-medium text-slate-200">{task.title}</span><span className="text-xs font-semibold uppercase text-slate-400">{task.status}</span></div><p className="mt-1 truncate text-xs text-slate-500">{task.message}</p><div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-cyan-400 transition-all" style={{ width: `${task.progress}%` }} /></div><p className="mt-1 text-right text-xs text-slate-500">{task.progress}%</p></div>)}</div>
           </section>}
           <div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-7">
             {!workspace ? (

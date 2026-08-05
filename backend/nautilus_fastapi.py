@@ -357,6 +357,7 @@ async def health_alias():
 
 # ── WebSocket live-data helpers ───────────────────────────────────────────────
 
+
 async def _collect_live_snapshot() -> dict:
     """Gather a lightweight snapshot of live system state for WebSocket push."""
     info = nautilus_system.get_system_info()
@@ -432,7 +433,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str = ""):
         await websocket.close(code=4001, reason="Token has been revoked")
         return
 
-    await manager.connect(websocket)
+    owner_id = payload.get("sub")
+    if not isinstance(owner_id, str) or not owner_id.strip():
+        await websocket.close(code=4001, reason="Token subject is required")
+        return
+
+    await manager.connect(websocket, owner_id)
     last_push = 0.0
     try:
         info = nautilus_system.get_system_info()

@@ -240,10 +240,14 @@ def test_artifacts_are_owner_scoped_and_validate_decisions(client):
 
 def test_latest_current_revision_decision_controls_eligibility_and_is_auditable(client):
     workspace = _create_workspace(client).json()["workspace"]
-    artifact, revision = client.post(
-        f"/api/copilot/workspaces/{workspace['id']}/artifacts",
-        json={"kind": "specification", "title": "Spec", "content": "Review me."},
-    ).json().values()
+    artifact, revision = (
+        client.post(
+            f"/api/copilot/workspaces/{workspace['id']}/artifacts",
+            json={"kind": "specification", "title": "Spec", "content": "Review me."},
+        )
+        .json()
+        .values()
+    )
 
     approve = client.post(
         f"/api/copilot/artifacts/{artifact['id']}/revisions/{revision['id']}/approval",
@@ -296,3 +300,146 @@ def test_advance_lifecycle_is_atomic_for_same_workspace(client):
         "transitions"
     ]
     assert len(transitions) == 1
+
+
+def test_task_progress_is_durable_and_streamed_to_owner(client, monkeypatch):
+    workspace = _create_workspace(client).json()["workspace"]
+    delivered = []
+
+    async def capture(owner_id, message):
+        delivered.append((owner_id, message))
+
+    monkeypatch.setattr("routers.copilot.manager.send_to", capture)
+    created = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/tasks",
+        json={"title": "Define validation plan"},
+    )
+    assert created.status_code == 201
+    task = created.json()["task"]
+    assert task["status"] == "pending"
+    assert task["progress"] == 0
+
+    updated = client.post(
+        f"/api/copilot/tasks/{task['id']}/events",
+        json={"status": "running", "progress": 40, "message": "Checking constraints"},
+    )
+    assert updated.status_code == 201
+    body = updated.json()
+    assert body["task"]["progress"] == 40
+    assert body["event"]["sequence"] == 1
+    assert delivered == [
+        (
+            "admin",
+            {
+                "type": "copilot_task_progress",
+                "workspace_id": workspace["id"],
+                "task": body["task"],
+                "event": body["event"],
+            },
+        )
+    ]
+
+    tasks = client.get(f"/api/copilot/workspaces/{workspace['id']}/tasks").json()["tasks"]
+    events = client.get(f"/api/copilot/tasks/{task['id']}/events").json()["events"]
+    assert tasks == [body["task"]]
+    assert [event["sequence"] for event in events] == [0, 1]
+    assert events[0]["message"] == "Task created"
+
+
+def test_task_progress_rejects_invalid_transitions_and_cross_owner_access(client):
+    workspace = _create_workspace(client).json()["workspace"]
+    task = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/tasks",
+        json={"title": "Prepare evidence"},
+    ).json()["task"]
+
+    assert (
+        client.post(
+            f"/api/copilot/tasks/{task['id']}/events",
+            json={"status": "running", "progress": 101, "message": "Invalid"},
+        ).status_code
+        == 422
+    )
+    client.post(
+        f"/api/copilot/tasks/{task['id']}/events",
+        json={"status": "running", "progress": 60, "message": "Running checks"},
+    )
+    assert (
+        client.post(
+            f"/api/copilot/tasks/{task['id']}/events",
+            json={"status": "running", "progress": 50, "message": "Went backwards"},
+        ).status_code
+        == 409
+    )
+    assert (
+        client.post(
+            f"/api/copilot/tasks/{task['id']}/events",
+            json={"status": "succeeded", "progress": 90, "message": "Incomplete"},
+        ).status_code
+        == 409
+    )
+    completed = client.post(
+        f"/api/copilot/tasks/{task['id']}/events",
+        json={"status": "succeeded", "progress": 100, "message": "Evidence ready"},
+    )
+    assert completed.status_code == 201
+    assert (
+        client.post(
+            f"/api/copilot/tasks/{task['id']}/events",
+            json={"status": "running", "progress": 100, "message": "Restart"},
+        ).status_code
+        == 409
+    )
+
+    other_token = create_access_token({"sub": "other-user", "role": "trader"})
+    headers = {"Authorization": f"Bearer {other_token}"}
+    assert (
+        client.get(f"/api/copilot/workspaces/{workspace['id']}/tasks", headers=headers).status_code
+        == 404
+    )
+    assert client.get(f"/api/copilot/tasks/{task['id']}/events", headers=headers).status_code == 404
+
+
+def test_task_progress_events_are_serialized(client):
+    workspace = _create_workspace(client).json()["workspace"]
+    task = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/tasks",
+        json={"title": "Run independent checks"},
+    ).json()["task"]
+
+    async def progress_twice():
+        return await asyncio.gather(
+            copilot_store.append_task_event(task["id"], "running", 50, "Check A", "admin"),
+            copilot_store.append_task_event(task["id"], "running", 50, "Check B", "admin"),
+        )
+
+    results = asyncio.run(progress_twice())
+    assert sorted(result[1]["sequence"] for result in results) == [1, 2]
+    events = client.get(f"/api/copilot/tasks/{task['id']}/events").json()["events"]
+    assert [event["sequence"] for event in events] == [0, 1, 2]
+
+
+def test_task_progress_websocket_delivery_is_owner_scoped():
+    from state import ConnectionManager
+
+    class Socket:
+        def __init__(self):
+            self.messages = []
+
+        async def accept(self):
+            return None
+
+        async def send_json(self, message):
+            self.messages.append(message)
+
+    first, second = Socket(), Socket()
+    manager = ConnectionManager()
+
+    async def deliver():
+        await manager.connect(first, "first-owner")
+        await manager.connect(second, "second-owner")
+        await manager.send_to("first-owner", {"type": "copilot_task_progress"})
+
+    asyncio.run(deliver())
+    assert first.messages == [{"type": "copilot_task_progress"}]
+    assert second.messages == []

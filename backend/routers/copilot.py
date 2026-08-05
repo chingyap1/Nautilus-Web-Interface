@@ -7,6 +7,7 @@ import database
 from auth_jwt import get_current_user
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
+from state import manager
 
 router = APIRouter(prefix="/api/copilot", tags=["strategy-copilot"])
 
@@ -79,6 +80,24 @@ class ApprovalCreate(BaseModel):
     )
 
 
+class TaskCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    _title = field_validator("title")(
+        lambda value: value.strip() or (_ for _ in ()).throw(ValueError("title must not be blank"))
+    )
+
+
+class TaskEventCreate(BaseModel):
+    status: str = Field(pattern="^(running|succeeded|failed|cancelled)$")
+    progress: int = Field(ge=0, le=100)
+    message: str = Field(min_length=1, max_length=2_000)
+    _message = field_validator("message")(
+        lambda value: (
+            value.strip() or (_ for _ in ()).throw(ValueError("message must not be blank"))
+        )
+    )
+
+
 def _owner(user: dict) -> str:
     owner_id = user.get("sub")
     if not isinstance(owner_id, str) or not owner_id.strip():
@@ -105,6 +124,13 @@ async def _owned_artifact(artifact_id: str, owner_id: str) -> dict:
     if not artifact:
         raise HTTPException(status_code=404, detail="Copilot artifact not found")
     return artifact
+
+
+async def _owned_task(task_id: str, owner_id: str) -> dict:
+    task = await copilot_store.get_task(task_id, owner_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Copilot task not found")
+    return task
 
 
 @router.get("/workspaces")
@@ -266,6 +292,62 @@ async def decide_revision(
         json.dumps({"decision": body.decision, "approval_id": approval["id"]}),
     )
     return {"approval": approval}
+
+
+@router.get("/workspaces/{workspace_id}/tasks")
+async def list_tasks(workspace_id: str, user: dict = Depends(get_current_user)):
+    await _owned_workspace(workspace_id, _owner(user))
+    tasks = await copilot_store.list_tasks(workspace_id)
+    return {"tasks": tasks, "count": len(tasks)}
+
+
+@router.post("/workspaces/{workspace_id}/tasks", status_code=201)
+async def create_task(workspace_id: str, body: TaskCreate, user: dict = Depends(get_current_user)):
+    owner_id = _owner(user)
+    await _owned_workspace(workspace_id, owner_id)
+    task, event = await copilot_store.create_task(workspace_id, body.title, owner_id)
+    await database.log_action(
+        "copilot_task_created",
+        owner_id,
+        f"copilot_task:{task['id']}",
+        json.dumps({"workspace_id": workspace_id, "event_id": event["id"]}),
+    )
+    return {"task": task, "event": event}
+
+
+@router.get("/tasks/{task_id}/events")
+async def list_task_events(task_id: str, user: dict = Depends(get_current_user)):
+    task = await _owned_task(task_id, _owner(user))
+    events = await copilot_store.list_task_events(task["id"])
+    return {"events": events, "count": len(events)}
+
+
+@router.post("/tasks/{task_id}/events", status_code=201)
+async def create_task_event(
+    task_id: str, body: TaskEventCreate, user: dict = Depends(get_current_user)
+):
+    owner_id = _owner(user)
+    task = await _owned_task(task_id, owner_id)
+    try:
+        task, event = await copilot_store.append_task_event(
+            task["id"], body.status, body.progress, body.message, owner_id
+        )
+    except copilot_store.TaskProgressConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    message = {
+        "type": "copilot_task_progress",
+        "workspace_id": task["workspace_id"],
+        "task": task,
+        "event": event,
+    }
+    await manager.send_to(owner_id, message)
+    await database.log_action(
+        "copilot_task_progressed",
+        owner_id,
+        f"copilot_task:{task_id}",
+        json.dumps({"event_id": event["id"], "status": body.status, "progress": body.progress}),
+    )
+    return {"task": task, "event": event}
 
 
 @router.get("/workspaces/{workspace_id}/lifecycle")

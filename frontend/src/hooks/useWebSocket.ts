@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { API_CONFIG } from '../config';
+import type { CopilotTask, CopilotTaskEvent } from '../services/copilotService';
 
 export interface WsMessage {
   type: string;
@@ -17,6 +18,9 @@ export interface WsMessage {
   strategies?: Array<{ id: string; name: string; status: string }>;
   open_positions_count?: number;
   total_orders_count?: number;
+  workspace_id?: string;
+  task?: CopilotTask;
+  event?: CopilotTaskEvent;
 }
 
 interface UseWebSocketReturn {

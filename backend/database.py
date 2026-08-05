@@ -215,6 +215,19 @@ async def init_db() -> None:
                 to_lifecycle TEXT NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
                 FOREIGN KEY (workspace_id) REFERENCES copilot_workspaces(id)
             );
+            CREATE TABLE IF NOT EXISTS copilot_tasks (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL,
+                status TEXT NOT NULL, progress INTEGER NOT NULL, message TEXT NOT NULL,
+                created_by TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES copilot_workspaces(id)
+            );
+            CREATE TABLE IF NOT EXISTS copilot_task_events (
+                id TEXT PRIMARY KEY, task_id TEXT NOT NULL, sequence INTEGER NOT NULL,
+                status TEXT NOT NULL, progress INTEGER NOT NULL, message TEXT NOT NULL,
+                created_by TEXT NOT NULL, created_at TEXT NOT NULL,
+                UNIQUE(task_id, sequence),
+                FOREIGN KEY (task_id) REFERENCES copilot_tasks(id)
+            );
 
             CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
 
@@ -235,6 +248,8 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_copilot_artifacts_workspace ON copilot_artifacts(workspace_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_copilot_revisions_artifact ON copilot_artifact_revisions(artifact_id, revision);
             CREATE INDEX IF NOT EXISTS idx_copilot_approvals_revision ON copilot_approvals(artifact_revision_id, decided_at);
+            CREATE INDEX IF NOT EXISTS idx_copilot_tasks_workspace ON copilot_tasks(workspace_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_copilot_task_events_task ON copilot_task_events(task_id, sequence);
             """
         )
         await db.commit()

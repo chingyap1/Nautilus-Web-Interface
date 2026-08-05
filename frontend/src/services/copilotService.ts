@@ -18,6 +18,9 @@ export interface CopilotArtifactRevision { id: string; artifact_id: string; revi
 export interface CopilotApproval { id: string; artifact_revision_id: string; decision: 'approved' | 'rejected'; reason: string; decided_by: string; decided_at: string; }
 export interface CopilotTransition { id: string; workspace_id: string; from_lifecycle: CopilotLifecycle; to_lifecycle: CopilotLifecycle; actor_id: string; created_at: string; }
 export interface CopilotEligibility { eligible: boolean; target: CopilotLifecycle | null; required_artifact_kind?: CopilotArtifactKind; reason: string; }
+export type CopilotTaskStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export interface CopilotTask { id: string; workspace_id: string; title: string; status: CopilotTaskStatus; progress: number; message: string; created_by: string; created_at: string; updated_at: string; }
+export interface CopilotTaskEvent { id: string; task_id: string; sequence: number; status: CopilotTaskStatus; progress: number; message: string; created_by: string; created_at: string; }
 
 export interface CopilotConversation {
   id: string;
@@ -68,6 +71,9 @@ export const copilotService = {
   createRevision: (artifactId: string, content: string) => api.post<{ revision: CopilotArtifactRevision }>(`/api/copilot/artifacts/${artifactId}/revisions`, { content }),
   listApprovals: (artifactId: string) => api.get<{ approvals: CopilotApproval[] }>(`/api/copilot/artifacts/${artifactId}/approvals`),
   decideRevision: (artifactId: string, revisionId: string, decision: CopilotApproval['decision'], reason: string) => api.post<{ approval: CopilotApproval }>(`/api/copilot/artifacts/${artifactId}/revisions/${revisionId}/approval`, { decision, reason }),
+  listTasks: (workspaceId: string) => api.get<{ tasks: CopilotTask[] }>(`/api/copilot/workspaces/${workspaceId}/tasks`),
+  createTask: (workspaceId: string, title: string) => api.post<{ task: CopilotTask; event: CopilotTaskEvent }>(`/api/copilot/workspaces/${workspaceId}/tasks`, { title }),
+  listTaskEvents: (taskId: string) => api.get<{ events: CopilotTaskEvent[] }>(`/api/copilot/tasks/${taskId}/events`),
   lifecycle: (workspaceId: string) => api.get<{ workspace: CopilotWorkspace; eligibility: CopilotEligibility; transitions: CopilotTransition[] }>(`/api/copilot/workspaces/${workspaceId}/lifecycle`),
   advanceLifecycle: (workspaceId: string) => api.post<{ workspace: CopilotWorkspace; transition: CopilotTransition }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/advance`, {}),
 };
