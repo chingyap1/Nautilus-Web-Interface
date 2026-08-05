@@ -1,4 +1,7 @@
-nautilus_trader>=1.220.0
+# Keep this exactly aligned with the framework's locked production engine. The
+# backend uses Nautilus for its built-in demo backtests, but must not resolve a
+# newer engine independently from the paper-trading agent.
+nautilus_trader==1.229.0
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 pydantic>=2.4.0
