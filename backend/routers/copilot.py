@@ -1,21 +1,19 @@
 """Authenticated, non-executing Strategy Copilot workspace API (Phase O1a)."""
 
 import json
-from typing import Optional
-
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, field_validator
 
 import copilot_store
 import database
 from auth_jwt import get_current_user
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field, field_validator
 
 router = APIRouter(prefix="/api/copilot", tags=["strategy-copilot"])
 
 
 class WorkspaceCreate(BaseModel):
     title: str = Field(min_length=1, max_length=120)
-    strategy_id: Optional[str] = Field(default=None, max_length=120)
+    strategy_id: str | None = Field(default=None, max_length=120)
 
     @field_validator("title")
     @classmethod
@@ -50,6 +48,37 @@ class MessageCreate(BaseModel):
         return value
 
 
+class ArtifactCreate(BaseModel):
+    kind: str = Field(pattern="^(specification|strategy_draft)$")
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=1, max_length=50_000)
+
+    @field_validator("title", "content")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
+class RevisionCreate(BaseModel):
+    content: str = Field(min_length=1, max_length=50_000)
+    _content = field_validator("content")(
+        lambda value: (
+            value.strip() or (_ for _ in ()).throw(ValueError("content must not be blank"))
+        )
+    )
+
+
+class ApprovalCreate(BaseModel):
+    decision: str = Field(pattern="^(approved|rejected)$")
+    reason: str = Field(min_length=3, max_length=2_000)
+    _reason = field_validator("reason")(
+        lambda value: value.strip() or (_ for _ in ()).throw(ValueError("reason must not be blank"))
+    )
+
+
 def _owner(user: dict) -> str:
     owner_id = user.get("sub")
     if not isinstance(owner_id, str) or not owner_id.strip():
@@ -69,6 +98,13 @@ async def _owned_conversation(conversation_id: str, owner_id: str) -> dict:
     if not conversation:
         raise HTTPException(status_code=404, detail="Copilot conversation not found")
     return conversation
+
+
+async def _owned_artifact(artifact_id: str, owner_id: str) -> dict:
+    artifact = await copilot_store.get_artifact(artifact_id, owner_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Copilot artifact not found")
+    return artifact
 
 
 @router.get("/workspaces")
@@ -148,3 +184,113 @@ async def create_message(
         details=json.dumps({"message_id": message["id"], "status": message["status"]}),
     )
     return {"message": message, "acknowledgement": acknowledgement}
+
+
+@router.get("/workspaces/{workspace_id}/artifacts")
+async def list_artifacts(workspace_id: str, user: dict = Depends(get_current_user)):
+    await _owned_workspace(workspace_id, _owner(user))
+    artifacts = await copilot_store.list_artifacts(workspace_id)
+    return {"artifacts": artifacts, "count": len(artifacts)}
+
+
+@router.post("/workspaces/{workspace_id}/artifacts", status_code=201)
+async def create_artifact(
+    workspace_id: str, body: ArtifactCreate, user: dict = Depends(get_current_user)
+):
+    owner_id = _owner(user)
+    await _owned_workspace(workspace_id, owner_id)
+    artifact, revision = await copilot_store.create_artifact(
+        workspace_id, body.kind, body.title, body.content, owner_id
+    )
+    await database.log_action(
+        "copilot_artifact_created",
+        owner_id,
+        f"copilot_artifact:{artifact['id']}",
+        json.dumps(
+            {
+                "kind": body.kind,
+                "revision_id": revision["id"],
+                "content_hash": revision["content_hash"],
+            }
+        ),
+    )
+    return {"artifact": artifact, "revision": revision}
+
+
+@router.get("/artifacts/{artifact_id}/revisions")
+async def list_revisions(artifact_id: str, user: dict = Depends(get_current_user)):
+    artifact = await _owned_artifact(artifact_id, _owner(user))
+    revisions = await copilot_store.list_revisions(artifact["id"])
+    return {"revisions": revisions, "count": len(revisions)}
+
+
+@router.post("/artifacts/{artifact_id}/revisions", status_code=201)
+async def create_revision(
+    artifact_id: str, body: RevisionCreate, user: dict = Depends(get_current_user)
+):
+    owner_id = _owner(user)
+    artifact = await _owned_artifact(artifact_id, owner_id)
+    revision = await copilot_store.create_revision(artifact, body.content, owner_id)
+    await database.log_action(
+        "copilot_artifact_revised",
+        owner_id,
+        f"copilot_artifact:{artifact_id}",
+        json.dumps({"revision_id": revision["id"], "content_hash": revision["content_hash"]}),
+    )
+    return {"revision": revision}
+
+
+@router.get("/artifacts/{artifact_id}/approvals")
+async def list_approvals(artifact_id: str, user: dict = Depends(get_current_user)):
+    artifact = await _owned_artifact(artifact_id, _owner(user))
+    approvals = await copilot_store.list_approvals(artifact["id"])
+    return {"approvals": approvals, "count": len(approvals)}
+
+
+@router.post("/artifacts/{artifact_id}/revisions/{revision_id}/approval", status_code=201)
+async def decide_revision(
+    artifact_id: str, revision_id: str, body: ApprovalCreate, user: dict = Depends(get_current_user)
+):
+    owner_id = _owner(user)
+    artifact = await _owned_artifact(artifact_id, owner_id)
+    revisions = await copilot_store.list_revisions(artifact["id"])
+    if not any(revision["id"] == revision_id for revision in revisions):
+        raise HTTPException(status_code=404, detail="Copilot artifact revision not found")
+    approval = await copilot_store.decide_revision(
+        revision_id, body.decision, body.reason, owner_id
+    )
+    await database.log_action(
+        "copilot_artifact_decided",
+        owner_id,
+        f"copilot_artifact_revision:{revision_id}",
+        json.dumps({"decision": body.decision, "approval_id": approval["id"]}),
+    )
+    return {"approval": approval}
+
+
+@router.get("/workspaces/{workspace_id}/lifecycle")
+async def lifecycle_status(workspace_id: str, user: dict = Depends(get_current_user)):
+    workspace = await _owned_workspace(workspace_id, _owner(user))
+    return {
+        "workspace": workspace,
+        "eligibility": await copilot_store.transition_eligibility(workspace),
+        "transitions": await copilot_store.list_transitions(workspace_id),
+    }
+
+
+@router.post("/workspaces/{workspace_id}/lifecycle/advance")
+async def advance_lifecycle(workspace_id: str, user: dict = Depends(get_current_user)):
+    owner_id = _owner(user)
+    workspace = await _owned_workspace(workspace_id, owner_id)
+    transition = await copilot_store.advance_lifecycle(workspace, owner_id)
+    if not transition:
+        eligibility = await copilot_store.transition_eligibility(workspace)
+        raise HTTPException(status_code=409, detail=eligibility["reason"])
+    updated = await _owned_workspace(workspace_id, owner_id)
+    await database.log_action(
+        "copilot_lifecycle_advanced",
+        owner_id,
+        f"copilot_workspace:{workspace_id}",
+        json.dumps({"transition_id": transition["id"], "to": transition["to_lifecycle"]}),
+    )
+    return {"workspace": updated, "transition": transition}
