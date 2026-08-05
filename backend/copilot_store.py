@@ -268,30 +268,43 @@ async def list_revisions(artifact_id: str) -> list[dict[str, Any]]:
 
 async def create_revision(artifact: dict[str, Any], content: str, owner_id: str) -> dict[str, Any]:
     now = _now()
-    number = artifact["current_revision"] + 1
-    revision = {
-        "id": _id("REV"),
-        "artifact_id": artifact["id"],
-        "revision": number,
-        "content": content,
-        "content_hash": hashlib.sha256(content.encode()).hexdigest(),
-        "created_by": owner_id,
-        "created_at": now,
-    }
     async with aiosqlite.connect(database.DB_PATH) as db:
-        await db.execute(
-            "INSERT INTO copilot_artifact_revisions VALUES (:id, :artifact_id, :revision, :content, :content_hash, :created_by, :created_at)",
-            revision,
-        )
-        await db.execute(
-            "UPDATE copilot_artifacts SET current_revision = ?, updated_at = ? WHERE id = ?",
-            (number, now, artifact["id"]),
-        )
-        await db.execute(
-            "UPDATE copilot_workspaces SET updated_at = ? WHERE id = ?",
-            (now, artifact["workspace_id"]),
-        )
-        await db.commit()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT workspace_id, current_revision FROM copilot_artifacts WHERE id = ?",
+                (artifact["id"],),
+            ) as cursor:
+                current = await cursor.fetchone()
+            if not current:
+                await db.rollback()
+                raise ValueError("Copilot artifact no longer exists")
+            number = current[1] + 1
+            revision = {
+                "id": _id("REV"),
+                "artifact_id": artifact["id"],
+                "revision": number,
+                "content": content,
+                "content_hash": hashlib.sha256(content.encode()).hexdigest(),
+                "created_by": owner_id,
+                "created_at": now,
+            }
+            await db.execute(
+                "INSERT INTO copilot_artifact_revisions VALUES (:id, :artifact_id, :revision, :content, :content_hash, :created_by, :created_at)",
+                revision,
+            )
+            await db.execute(
+                "UPDATE copilot_artifacts SET current_revision = ?, updated_at = ? WHERE id = ?",
+                (number, now, artifact["id"]),
+            )
+            await db.execute(
+                "UPDATE copilot_workspaces SET updated_at = ? WHERE id = ?",
+                (now, current[0]),
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
     return revision
 
 
@@ -315,6 +328,20 @@ async def decide_revision(
     return approval
 
 
+async def list_approvals(artifact_id: str) -> list[dict[str, Any]]:
+    """Return append-only decisions for an artifact, newest first per revision."""
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT p.* FROM copilot_approvals p
+               JOIN copilot_artifact_revisions r ON r.id = p.artifact_revision_id
+               WHERE r.artifact_id = ?
+               ORDER BY r.revision DESC, p.decided_at DESC, p.rowid DESC""",
+            (artifact_id,),
+        ) as cursor:
+            return [dict(row) for row in await cursor.fetchall()]
+
+
 async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
     rule = TRANSITIONS.get(workspace["lifecycle"])
     if not rule:
@@ -325,12 +352,7 @@ async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
         }
     target, kind = rule
     async with aiosqlite.connect(database.DB_PATH) as db:
-        async with db.execute(
-            """SELECT 1 FROM copilot_artifacts a JOIN copilot_artifact_revisions r ON r.artifact_id=a.id AND r.revision=a.current_revision
-            JOIN copilot_approvals p ON p.artifact_revision_id=r.id WHERE a.workspace_id=? AND a.kind=? AND p.decision='approved' LIMIT 1""",
-            (workspace["id"], kind),
-        ) as cursor:
-            approved = await cursor.fetchone() is not None
+        approved = await _has_current_approval(db, workspace["id"], kind)
     return {
         "eligible": approved,
         "target": target,
@@ -340,30 +362,61 @@ async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
 
 
 async def advance_lifecycle(workspace: dict[str, Any], owner_id: str) -> dict[str, Any] | None:
-    eligibility = await transition_eligibility(workspace)
-    if not eligibility["eligible"]:
-        return None
     now = _now()
-    target = eligibility["target"]
-    transition = {
-        "id": _id("LCT"),
-        "workspace_id": workspace["id"],
-        "from_lifecycle": workspace["lifecycle"],
-        "to_lifecycle": target,
-        "actor_id": owner_id,
-        "created_at": now,
-    }
     async with aiosqlite.connect(database.DB_PATH) as db:
-        await db.execute(
-            "UPDATE copilot_workspaces SET lifecycle=?, updated_at=? WHERE id=? AND lifecycle=?",
-            (target, now, workspace["id"], workspace["lifecycle"]),
-        )
-        await db.execute(
-            "INSERT INTO copilot_lifecycle_transitions VALUES (:id, :workspace_id, :from_lifecycle, :to_lifecycle, :actor_id, :created_at)",
-            transition,
-        )
-        await db.commit()
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT lifecycle FROM copilot_workspaces WHERE id = ?",
+                (workspace["id"],),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row or row[0] != workspace["lifecycle"]:
+                await db.rollback()
+                return None
+            rule = TRANSITIONS.get(row[0])
+            if not rule or not await _has_current_approval(db, workspace["id"], rule[1]):
+                await db.rollback()
+                return None
+            target = rule[0]
+            transition = {
+                "id": _id("LCT"),
+                "workspace_id": workspace["id"],
+                "from_lifecycle": row[0],
+                "to_lifecycle": target,
+                "actor_id": owner_id,
+                "created_at": now,
+            }
+            updated = await db.execute(
+                "UPDATE copilot_workspaces SET lifecycle=?, updated_at=? WHERE id=? AND lifecycle=?",
+                (target, now, workspace["id"], row[0]),
+            )
+            if updated.rowcount != 1:
+                await db.rollback()
+                return None
+            await db.execute(
+                "INSERT INTO copilot_lifecycle_transitions VALUES (:id, :workspace_id, :from_lifecycle, :to_lifecycle, :actor_id, :created_at)",
+                transition,
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
     return transition
+
+
+async def _has_current_approval(db: aiosqlite.Connection, workspace_id: str, kind: str) -> bool:
+    """A current revision is approved only when its latest decision is approval."""
+    async with db.execute(
+        """SELECT p.decision FROM copilot_artifacts a
+           JOIN copilot_artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.current_revision
+           JOIN copilot_approvals p ON p.artifact_revision_id = r.id
+           WHERE a.workspace_id = ? AND a.kind = ?
+           ORDER BY p.decided_at DESC, p.rowid DESC LIMIT 1""",
+        (workspace_id, kind),
+    ) as cursor:
+        decision = await cursor.fetchone()
+    return decision is not None and decision[0] == "approved"
 
 
 async def list_transitions(workspace_id: str) -> list[dict[str, Any]]:

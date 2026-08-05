@@ -240,6 +240,13 @@ async def create_revision(
     return {"revision": revision}
 
 
+@router.get("/artifacts/{artifact_id}/approvals")
+async def list_approvals(artifact_id: str, user: dict = Depends(get_current_user)):
+    artifact = await _owned_artifact(artifact_id, _owner(user))
+    approvals = await copilot_store.list_approvals(artifact["id"])
+    return {"approvals": approvals, "count": len(approvals)}
+
+
 @router.post("/artifacts/{artifact_id}/revisions/{revision_id}/approval", status_code=201)
 async def decide_revision(
     artifact_id: str, revision_id: str, body: ApprovalCreate, user: dict = Depends(get_current_user)

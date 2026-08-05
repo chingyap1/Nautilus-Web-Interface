@@ -3,6 +3,7 @@
 import asyncio
 
 import aiosqlite
+import copilot_store
 import database
 from auth_jwt import create_access_token
 
@@ -235,3 +236,63 @@ def test_artifacts_are_owner_scoped_and_validate_decisions(client):
         ).status_code
         == 422
     )
+
+
+def test_latest_current_revision_decision_controls_eligibility_and_is_auditable(client):
+    workspace = _create_workspace(client).json()["workspace"]
+    artifact, revision = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/artifacts",
+        json={"kind": "specification", "title": "Spec", "content": "Review me."},
+    ).json().values()
+
+    approve = client.post(
+        f"/api/copilot/artifacts/{artifact['id']}/revisions/{revision['id']}/approval",
+        json={"decision": "approved", "reason": "Complete."},
+    )
+    assert approve.status_code == 201
+    assert client.get(f"/api/copilot/workspaces/{workspace['id']}/lifecycle").json()["eligibility"][
+        "eligible"
+    ]
+
+    reject = client.post(
+        f"/api/copilot/artifacts/{artifact['id']}/revisions/{revision['id']}/approval",
+        json={"decision": "rejected", "reason": "Add exit constraints."},
+    )
+    assert reject.status_code == 201
+    lifecycle = client.get(f"/api/copilot/workspaces/{workspace['id']}/lifecycle").json()
+    assert not lifecycle["eligibility"]["eligible"]
+    approvals = client.get(f"/api/copilot/artifacts/{artifact['id']}/approvals").json()["approvals"]
+    assert [approval["decision"] for approval in approvals] == ["rejected", "approved"]
+
+    client.post(
+        f"/api/copilot/artifacts/{artifact['id']}/revisions/{revision['id']}/approval",
+        json={"decision": "approved", "reason": "Exit constraints added."},
+    )
+    assert client.get(f"/api/copilot/workspaces/{workspace['id']}/lifecycle").json()["eligibility"][
+        "eligible"
+    ]
+
+
+def test_advance_lifecycle_is_atomic_for_same_workspace(client):
+    workspace = _create_workspace(client).json()["workspace"]
+    created = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/artifacts",
+        json={"kind": "specification", "title": "Spec", "content": "Ready."},
+    ).json()
+    client.post(
+        f"/api/copilot/artifacts/{created['artifact']['id']}/revisions/{created['revision']['id']}/approval",
+        json={"decision": "approved", "reason": "Ready to advance."},
+    )
+
+    async def advance_twice():
+        return await asyncio.gather(
+            copilot_store.advance_lifecycle(workspace, "admin"),
+            copilot_store.advance_lifecycle(workspace, "admin"),
+        )
+
+    results = asyncio.run(advance_twice())
+    assert sum(result is not None for result in results) == 1
+    transitions = client.get(f"/api/copilot/workspaces/{workspace['id']}/lifecycle").json()[
+        "transitions"
+    ]
+    assert len(transitions) == 1

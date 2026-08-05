@@ -2,10 +2,12 @@ import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Bot, CheckCircle2, FileText, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   copilotService,
+  type CopilotApproval,
   type CopilotConversation,
   type CopilotMessage,
   type CopilotArtifact,
   type CopilotArtifactKind,
+  type CopilotArtifactRevision,
   type CopilotEligibility,
   type CopilotWorkspace,
 } from '@/services/copilotService';
@@ -22,6 +24,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [conversations, setConversations] = useState<CopilotConversation[]>([]);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [artifacts, setArtifacts] = useState<CopilotArtifact[]>([]);
+  const [reviewState, setReviewState] = useState<Record<string, { revision: CopilotArtifactRevision; decision?: CopilotApproval }>>({});
   const [eligibility, setEligibility] = useState<CopilotEligibility | null>(null);
   const [artifactKind, setArtifactKind] = useState<CopilotArtifactKind>('specification');
   const [artifactTitle, setArtifactTitle] = useState('Strategy specification');
@@ -66,6 +69,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       if (version !== selectionVersion.current) return;
       setConversations(data.conversations.length ? data.conversations : [active]);
       setArtifacts(loadedArtifacts.artifacts);
+      await refreshReviewState(loadedArtifacts.artifacts);
       setEligibility(lifecycle.eligibility);
       await selectConversation(active, version);
     } catch (reason) {
@@ -75,6 +79,23 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     } finally {
       if (version === selectionVersion.current) setLoadingWorkspace(false);
     }
+  }
+
+  async function refreshReviewState(items = artifacts) {
+    const nextReviewState: Record<string, { revision: CopilotArtifactRevision; decision?: CopilotApproval }> = {};
+    await Promise.all(items.map(async (artifact) => {
+      const [revisions, approvals] = await Promise.all([
+        copilotService.listRevisions(artifact.id),
+        copilotService.listApprovals(artifact.id),
+      ]);
+      const revision = revisions.revisions.find((item) => item.revision === artifact.current_revision);
+      if (!revision) return;
+      nextReviewState[artifact.id] = {
+        revision,
+        decision: approvals.approvals.find((item) => item.artifact_revision_id === revision.id),
+      };
+    }));
+    setReviewState(nextReviewState);
   }
 
   async function selectConversation(next: CopilotConversation, version = ++selectionVersion.current) {
@@ -155,20 +176,21 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     setBusy(true); setError(null);
     try {
       const created = await copilotService.createArtifact(workspace.id, artifactKind, artifactTitle.trim(), artifactContent.trim());
-      setArtifacts((current) => [created.artifact, ...current]);
+      const nextArtifacts = [created.artifact, ...artifacts]; setArtifacts(nextArtifacts);
+      await refreshReviewState(nextArtifacts);
       setArtifactContent('');
       const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save artifact'); } finally { setBusy(false); }
   }
 
-  async function approveCurrentArtifact(artifact: CopilotArtifact) {
+  async function decideCurrentArtifact(artifact: CopilotArtifact, decision: CopilotApproval['decision']) {
     if (!workspace) return;
     setBusy(true); setError(null);
     try {
-      const revisions = await copilotService.listRevisions(artifact.id);
-      const current = revisions.revisions.find((item) => item.revision === artifact.current_revision);
+      const current = reviewState[artifact.id]?.revision;
       if (!current) throw new Error('Current artifact revision was not found');
-      await copilotService.decideRevision(artifact.id, current.id, 'approved', approvalReason.trim());
+      await copilotService.decideRevision(artifact.id, current.id, decision, approvalReason.trim());
+      await refreshReviewState();
       const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not approve artifact'); } finally { setBusy(false); }
   }
@@ -232,7 +254,10 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
             <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">O1b review workflow</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
             {eligibility && !eligibility.eligible && <p className="mt-2 text-xs text-amber-300">{eligibility.reason}</p>}
             <form onSubmit={createArtifact} className="mt-4 grid gap-2 sm:grid-cols-2"><select value={artifactKind} onChange={(event) => setArtifactKind(event.target.value as CopilotArtifactKind)} aria-label="Artifact kind" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white"><option value="specification">Specification</option><option value="strategy_draft">Strategy draft</option></select><input value={artifactTitle} onChange={(event) => setArtifactTitle(event.target.value)} aria-label="Artifact title" maxLength={120} className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><textarea value={artifactContent} onChange={(event) => setArtifactContent(event.target.value)} aria-label="Artifact content" placeholder="Document the proposal for human review…" rows={2} maxLength={50000} className="sm:col-span-2 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><button disabled={busy || !artifactContent.trim()} className="rounded-lg border border-cyan-400/35 px-3 py-2 text-sm font-semibold text-cyan-200 disabled:opacity-40"><FileText className="mr-1 inline h-4 w-4" /> Save immutable revision</button></form>
-            <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={artifact.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span><button type="button" onClick={() => void approveCurrentArtifact(artifact)} disabled={busy || approvalReason.trim().length < 3} className="rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-40">Approve current revision</button></div>)}</div>
+            <div className="mt-3 space-y-2">{artifacts.map((artifact) => {
+              const review = reviewState[artifact.id];
+              return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span><div className="flex gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button></div></div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</p>}</div>;
+            })}</div>
             {artifacts.length > 0 && <input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} aria-label="Approval reason" maxLength={2000} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-white" />}
           </section>}
           <div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-7">

@@ -66,6 +66,7 @@ export const copilotService = {
   createArtifact: (workspaceId: string, kind: CopilotArtifactKind, title: string, content: string) => api.post<{ artifact: CopilotArtifact; revision: CopilotArtifactRevision }>(`/api/copilot/workspaces/${workspaceId}/artifacts`, { kind, title, content }),
   listRevisions: (artifactId: string) => api.get<{ revisions: CopilotArtifactRevision[] }>(`/api/copilot/artifacts/${artifactId}/revisions`),
   createRevision: (artifactId: string, content: string) => api.post<{ revision: CopilotArtifactRevision }>(`/api/copilot/artifacts/${artifactId}/revisions`, { content }),
+  listApprovals: (artifactId: string) => api.get<{ approvals: CopilotApproval[] }>(`/api/copilot/artifacts/${artifactId}/approvals`),
   decideRevision: (artifactId: string, revisionId: string, decision: CopilotApproval['decision'], reason: string) => api.post<{ approval: CopilotApproval }>(`/api/copilot/artifacts/${artifactId}/revisions/${revisionId}/approval`, { decision, reason }),
   lifecycle: (workspaceId: string) => api.get<{ workspace: CopilotWorkspace; eligibility: CopilotEligibility; transitions: CopilotTransition[] }>(`/api/copilot/workspaces/${workspaceId}/lifecycle`),
   advanceLifecycle: (workspaceId: string) => api.post<{ workspace: CopilotWorkspace; transition: CopilotTransition }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/advance`, {}),
