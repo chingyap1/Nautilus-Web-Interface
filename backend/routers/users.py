@@ -18,11 +18,17 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 
 _PASSWORD_MIN_LEN = 8
 
+# Roles allowed for human principals (D6.4)
+_HUMAN_ROLES = "^(viewer|operator|approver|admin|trader)$"
+# Roles allowed for service principals — excludes approver/admin (D6.4)
+_SERVICE_ROLES = "^(viewer|operator|trader)$"
+
 
 class CreateUserRequest(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
     password: str = Field(..., min_length=_PASSWORD_MIN_LEN)
-    role: str = Field("trader", pattern="^(admin|trader)$")
+    role: str = Field("viewer", pattern=_HUMAN_ROLES)
+    principal_type: str = Field("human", pattern="^(human|service)$")
 
 
 class ChangePasswordRequest(BaseModel):
@@ -39,9 +45,18 @@ async def list_users(_admin=Depends(require_admin)):
 @router.post("", status_code=201)
 async def create_user(body: CreateUserRequest, _admin=Depends(require_admin)):
     """Create a new user account."""
+    # Pydantic validates the role against the human pattern by default.
+    # If principal_type is service, re-validate against the service pattern.
+    if body.principal_type == "service" and body.role not in ("viewer", "operator", "trader"):
+        raise HTTPException(
+            status_code=422,
+            detail="Service principals can only hold viewer, operator, or trader roles",
+        )
     hashed = hash_password(body.password)
     try:
-        user = await database.create_user(body.username, hashed, role=body.role)
+        user = await database.create_user(
+            body.username, hashed, role=body.role, principal_type=body.principal_type
+        )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
     return {"success": True, "user": user}

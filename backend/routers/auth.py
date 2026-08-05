@@ -70,7 +70,14 @@ async def login(body: LoginRequest, request: Request):
     session_minutes = settings.get("security", {}).get("session_timeout", 0)
     expires = timedelta(minutes=int(session_minutes)) if session_minutes else None
 
-    token = create_access_token({"sub": user["username"], "role": user["role"]}, expires_delta=expires)
+    token = create_access_token(
+        {
+            "sub": user["username"],
+            "role": user["role"],
+            "principal_type": user.get("principal_type", "human"),
+        },
+        expires_delta=expires,
+    )
     await database.log_action(
         action="login",
         user_id=user["username"],
@@ -110,7 +117,11 @@ async def logout(request: Request):
 async def refresh_token(payload: dict = Depends(get_current_user)):
     """Issue a new token (extending expiry) given a valid existing Bearer token."""
     new_token = create_access_token(
-        {"sub": payload["sub"], "role": payload.get("role", "trader")}
+        {
+            "sub": payload["sub"],
+            "role": payload.get("role", "viewer"),
+            "principal_type": payload.get("principal_type", "human"),
+        }
     )
     return {"access_token": new_token, "token_type": "bearer"}
 
