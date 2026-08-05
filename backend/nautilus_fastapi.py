@@ -148,6 +148,9 @@ async def lifespan(app: FastAPI):
     await database.init_db()
     # Initialise commands/events tables (Phase 2 — durable command layer)
     await _commands.init()
+    # Initialise proposal/approval/interlock tables (A3 — D4)
+    import stores as _stores
+    await _stores.init_stores_db()
     # Start the async command processor (polls PENDING commands, reconciles)
     await _cmdproc.start_processor()
     # Restore persisted strategies and component states
