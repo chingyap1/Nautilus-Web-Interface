@@ -47,3 +47,9 @@ manager = ConnectionManager()
 from live_trading import LiveTradingManager  # noqa: E402
 
 live_manager = LiveTradingManager()
+
+# Shared MCP adapter singleton (D7) — used by the supervision router and
+# any other router that needs to create proposals or inspect interlock state.
+from mcp_adapter import MCPAdapter  # noqa: E402
+
+mcp_adapter = MCPAdapter()
