@@ -38,6 +38,7 @@ from routers import (
     positions,
     risk,
     strategies,
+    supervision,
     system,
     users,
 )
@@ -333,6 +334,7 @@ app.include_router(adapters.router)
 app.include_router(database_ops.router)
 app.include_router(components.router)
 app.include_router(users.router)
+app.include_router(supervision.router)
 
 
 # ── Root endpoint ─────────────────────────────────────────────────────────────
