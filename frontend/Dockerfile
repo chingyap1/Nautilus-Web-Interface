@@ -1,11 +1,14 @@
+# syntax=docker/dockerfile:1
 FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies — use npm install instead of npm ci for compatibility
-# with external submodules where package-lock.json may be out of sync.
+# Install dependencies — npm ci is deterministic (requires committed
+# package-lock.json) and faster than npm install. BuildKit cache mount
+# avoids re-downloading node_modules on unchanged lockfile.
 COPY package*.json ./
-RUN npm install --legacy-peer-deps || npm ci || true
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --legacy-peer-deps
 
 # Copy source and build
 COPY . .
@@ -18,7 +21,7 @@ ARG VITE_ADMIN_DB_API_URL=
 
 RUN npm run build
 
-# ── Production image ─────────────────────────────────────────────────────────
+# -- Production image --------------------------------------------------------
 FROM nginx:alpine
 
 COPY --from=builder /app/dist /usr/share/nginx/html
