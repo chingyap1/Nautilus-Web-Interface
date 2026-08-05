@@ -54,6 +54,9 @@ def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setattr(commands, "DB_PATH", path)
     asyncio.run(database.init_db())
     asyncio.run(commands.init_commands_db())
+    import stores
+    monkeypatch.setattr(stores, "DB_PATH", path)
+    asyncio.run(stores.init_stores_db())
 
 
 @pytest.fixture(autouse=True)
