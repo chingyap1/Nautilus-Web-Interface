@@ -57,6 +57,8 @@ logs/
 
 # Testing
 coverage/
+.coverage
+coverage.xml
 .nyc_output/
 .pytest_cache/
 

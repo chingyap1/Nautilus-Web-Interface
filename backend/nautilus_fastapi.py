@@ -31,6 +31,7 @@ from routers import (
     auth as auth_router_module,
     backtest,
     components,
+    copilot,
     database_ops,
     market_data,
     orders,
@@ -316,6 +317,7 @@ async def _count_requests(request: Request, call_next):
 # ── Include routers ───────────────────────────────────────────────────────────
 
 app.include_router(auth_router_module.router)
+app.include_router(copilot.router)
 app.include_router(strategies.router)
 app.include_router(orders.router)
 app.include_router(positions.router)

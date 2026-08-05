@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import api from '../lib/api';
+import { StrategyCopilot } from '../components/strategies/StrategyCopilot';
 
 interface Strategy {
   id: string;
@@ -117,10 +118,12 @@ export default function StrategiesPage() {
               onClick={() => setShowAddModal(true)}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
-              + Add Strategy
+              Configure template
             </button>
           </div>
         </div>
+
+        <StrategyCopilot strategies={strategies.map(({ id, name }) => ({ id, name }))} />
 
         {/* Strategies Grid */}
         {strategies.length === 0 ? (
@@ -132,7 +135,7 @@ export default function StrategiesPage() {
               onClick={() => setShowAddModal(true)}
               className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all font-semibold"
             >
-              + Add Strategy
+              Configure template
             </button>
           </div>
         ) : (
@@ -208,7 +211,8 @@ export default function StrategiesPage() {
         {showAddModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
-              <h2 className="text-2xl font-bold text-gray-900 mb-6">Add New Strategy</h2>
+              <h2 className="text-2xl font-bold text-gray-900 mb-2">Configure template</h2>
+              <p className="mb-6 text-sm text-gray-500">Use the existing form to create a known strategy directly instead of starting with Copilot.</p>
               
               <div className="space-y-4">
                 <div>

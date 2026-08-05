@@ -163,6 +163,36 @@ async def init_db() -> None:
                 expires_at  TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS copilot_workspaces (
+                id           TEXT PRIMARY KEY,
+                owner_id     TEXT NOT NULL,
+                title        TEXT NOT NULL,
+                strategy_id  TEXT,
+                lifecycle    TEXT NOT NULL DEFAULT 'IDEA',
+                created_at   TEXT NOT NULL,
+                updated_at   TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS copilot_conversations (
+                id            TEXT PRIMARY KEY,
+                workspace_id  TEXT NOT NULL,
+                title         TEXT NOT NULL,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES copilot_workspaces(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS copilot_messages (
+                id               TEXT PRIMARY KEY,
+                conversation_id  TEXT NOT NULL,
+                role             TEXT NOT NULL,
+                content          TEXT NOT NULL,
+                status           TEXT NOT NULL,
+                sequence         INTEGER NOT NULL DEFAULT 0,
+                created_at       TEXT NOT NULL,
+                FOREIGN KEY (conversation_id) REFERENCES copilot_conversations(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
 
             CREATE INDEX IF NOT EXISTS idx_orders_status    ON orders(status);
@@ -173,6 +203,12 @@ async def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_strategies_created_at ON strategies(created_at);
             CREATE INDEX IF NOT EXISTS idx_positions_is_open     ON positions(is_open);
             CREATE INDEX IF NOT EXISTS idx_positions_strategy_id ON positions(strategy_id);
+            CREATE INDEX IF NOT EXISTS idx_copilot_workspaces_owner
+                ON copilot_workspaces(owner_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_copilot_conversations_workspace
+                ON copilot_conversations(workspace_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_copilot_messages_conversation
+                ON copilot_messages(conversation_id, created_at, sequence);
             """
         )
         await db.commit()

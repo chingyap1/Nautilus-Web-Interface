@@ -5,6 +5,7 @@ Resets module-level rate-limit counters before each test so that the
 /api/auth/login call inside every `client` fixture is never blocked by the
 5-req/minute cap that accumulates across the test session.
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def reset_rate_limit_counters():
 
 
 @pytest.fixture(autouse=True)
-async def isolated_database(tmp_path, monkeypatch):
+def isolated_database(tmp_path, monkeypatch):
     """Route database and command modules to one writable DB per test."""
     import commands
     import database
@@ -51,8 +52,8 @@ async def isolated_database(tmp_path, monkeypatch):
     path = tmp_path / "nautilus-test.db"
     monkeypatch.setattr(database, "DB_PATH", path)
     monkeypatch.setattr(commands, "DB_PATH", path)
-    await database.init_db()
-    await commands.init_commands_db()
+    asyncio.run(database.init_db())
+    asyncio.run(commands.init_commands_db())
 
 
 @pytest.fixture(autouse=True)
