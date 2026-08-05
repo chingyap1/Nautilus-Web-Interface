@@ -47,6 +47,32 @@ class CommandType(str, Enum):
     STOP_STRATEGY = "stop_strategy"
     KILL_SWITCH = "kill_switch"
 
+    @classmethod
+    def values(cls) -> set[str]:
+        """Return the set of command-type string values."""
+        return {member.value for member in cls}
+
+
+def validate_catalog_drift() -> None:
+    """Ensure CommandType matches mcp_gateway.catalog (D3, D6.1).
+
+    Raises ValueError if NWI CommandType members don't exactly match
+    the enabled catalog entry names from mcp_gateway.catalog.
+    """
+    from mcp_gateway.catalog import list_commands
+
+    catalog_names = {cmd.name for cmd in list_commands(enabled_only=True)}
+    nwi_names = CommandType.values()
+    if catalog_names != nwi_names:
+        missing_in_catalog = nwi_names - catalog_names
+        missing_in_nwi = catalog_names - nwi_names
+        parts: list[str] = []
+        if missing_in_catalog:
+            parts.append(f"In CommandType but not catalog: {sorted(missing_in_catalog)}")
+        if missing_in_nwi:
+            parts.append(f"In catalog but not CommandType: {sorted(missing_in_nwi)}")
+        raise ValueError("; ".join(parts))
+
 
 class CommandStatus(str, Enum):
     PENDING = "PENDING"
