@@ -193,6 +193,29 @@ async def init_db() -> None:
                 FOREIGN KEY (conversation_id) REFERENCES copilot_conversations(id)
             );
 
+            CREATE TABLE IF NOT EXISTS copilot_artifacts (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL,
+                title TEXT NOT NULL, current_revision INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES copilot_workspaces(id)
+            );
+            CREATE TABLE IF NOT EXISTS copilot_artifact_revisions (
+                id TEXT PRIMARY KEY, artifact_id TEXT NOT NULL, revision INTEGER NOT NULL,
+                content TEXT NOT NULL, content_hash TEXT NOT NULL, created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL, UNIQUE(artifact_id, revision),
+                FOREIGN KEY (artifact_id) REFERENCES copilot_artifacts(id)
+            );
+            CREATE TABLE IF NOT EXISTS copilot_approvals (
+                id TEXT PRIMARY KEY, artifact_revision_id TEXT NOT NULL, decision TEXT NOT NULL,
+                reason TEXT NOT NULL, decided_by TEXT NOT NULL, decided_at TEXT NOT NULL,
+                FOREIGN KEY (artifact_revision_id) REFERENCES copilot_artifact_revisions(id)
+            );
+            CREATE TABLE IF NOT EXISTS copilot_lifecycle_transitions (
+                id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, from_lifecycle TEXT NOT NULL,
+                to_lifecycle TEXT NOT NULL, actor_id TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY (workspace_id) REFERENCES copilot_workspaces(id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
 
             CREATE INDEX IF NOT EXISTS idx_orders_status    ON orders(status);
@@ -209,6 +232,9 @@ async def init_db() -> None:
                 ON copilot_conversations(workspace_id, updated_at);
             CREATE INDEX IF NOT EXISTS idx_copilot_messages_conversation
                 ON copilot_messages(conversation_id, created_at, sequence);
+            CREATE INDEX IF NOT EXISTS idx_copilot_artifacts_workspace ON copilot_artifacts(workspace_id, updated_at);
+            CREATE INDEX IF NOT EXISTS idx_copilot_revisions_artifact ON copilot_artifact_revisions(artifact_id, revision);
+            CREATE INDEX IF NOT EXISTS idx_copilot_approvals_revision ON copilot_approvals(artifact_revision_id, decided_at);
             """
         )
         await db.commit()

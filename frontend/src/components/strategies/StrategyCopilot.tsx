@@ -1,9 +1,12 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { Bot, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Bot, CheckCircle2, FileText, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   copilotService,
   type CopilotConversation,
   type CopilotMessage,
+  type CopilotArtifact,
+  type CopilotArtifactKind,
+  type CopilotEligibility,
   type CopilotWorkspace,
 } from '@/services/copilotService';
 
@@ -18,6 +21,12 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [conversation, setConversation] = useState<CopilotConversation | null>(null);
   const [conversations, setConversations] = useState<CopilotConversation[]>([]);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
+  const [artifacts, setArtifacts] = useState<CopilotArtifact[]>([]);
+  const [eligibility, setEligibility] = useState<CopilotEligibility | null>(null);
+  const [artifactKind, setArtifactKind] = useState<CopilotArtifactKind>('specification');
+  const [artifactTitle, setArtifactTitle] = useState('Strategy specification');
+  const [artifactContent, setArtifactContent] = useState('');
+  const [approvalReason, setApprovalReason] = useState('Reviewed and ready for the next advisory stage.');
   const [title, setTitle] = useState('New strategy idea');
   const [strategyId, setStrategyId] = useState('');
   const [draft, setDraft] = useState('');
@@ -46,14 +55,18 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     setConversation(null);
     setConversations([]);
     setMessages([]);
+    setArtifacts([]);
+    setEligibility(null);
     setError(null);
     setLoadingWorkspace(true);
     try {
-      const data = await copilotService.listConversations(next.id);
+      const [data, loadedArtifacts, lifecycle] = await Promise.all([copilotService.listConversations(next.id), copilotService.listArtifacts(next.id), copilotService.lifecycle(next.id)]);
       let active = data.conversations[0];
       if (!active) active = (await copilotService.createConversation(next.id)).conversation;
       if (version !== selectionVersion.current) return;
       setConversations(data.conversations.length ? data.conversations : [active]);
+      setArtifacts(loadedArtifacts.artifacts);
+      setEligibility(lifecycle.eligibility);
       await selectConversation(active, version);
     } catch (reason) {
       if (version === selectionVersion.current) {
@@ -136,6 +149,40 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     }
   }
 
+  async function createArtifact(event: FormEvent) {
+    event.preventDefault();
+    if (!workspace || !artifactTitle.trim() || !artifactContent.trim()) return;
+    setBusy(true); setError(null);
+    try {
+      const created = await copilotService.createArtifact(workspace.id, artifactKind, artifactTitle.trim(), artifactContent.trim());
+      setArtifacts((current) => [created.artifact, ...current]);
+      setArtifactContent('');
+      const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save artifact'); } finally { setBusy(false); }
+  }
+
+  async function approveCurrentArtifact(artifact: CopilotArtifact) {
+    if (!workspace) return;
+    setBusy(true); setError(null);
+    try {
+      const revisions = await copilotService.listRevisions(artifact.id);
+      const current = revisions.revisions.find((item) => item.revision === artifact.current_revision);
+      if (!current) throw new Error('Current artifact revision was not found');
+      await copilotService.decideRevision(artifact.id, current.id, 'approved', approvalReason.trim());
+      const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not approve artifact'); } finally { setBusy(false); }
+  }
+
+  async function advanceLifecycle() {
+    if (!workspace) return;
+    setBusy(true); setError(null);
+    try {
+      const result = await copilotService.advanceLifecycle(workspace.id);
+      setWorkspace(result.workspace); setWorkspaces((current) => current.map((item) => item.id === result.workspace.id ? result.workspace : item));
+      const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not advance lifecycle'); } finally { setBusy(false); }
+  }
+
   return (
     <section className="mb-8 overflow-hidden rounded-2xl border border-cyan-400/20 bg-[var(--trader-panel)] shadow-2xl shadow-cyan-950/20">
       <div className="border-b border-white/8 bg-gradient-to-r from-cyan-400/10 via-transparent to-blue-500/10 p-5 sm:p-7">
@@ -181,6 +228,13 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
         </aside>
 
         <div className="flex min-h-[430px] flex-col">
+          {workspace && !loadingWorkspace && <section className="border-b border-white/8 bg-white/[0.02] p-4 sm:p-5" aria-label="Artifact review workflow">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">O1b review workflow</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
+            {eligibility && !eligibility.eligible && <p className="mt-2 text-xs text-amber-300">{eligibility.reason}</p>}
+            <form onSubmit={createArtifact} className="mt-4 grid gap-2 sm:grid-cols-2"><select value={artifactKind} onChange={(event) => setArtifactKind(event.target.value as CopilotArtifactKind)} aria-label="Artifact kind" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white"><option value="specification">Specification</option><option value="strategy_draft">Strategy draft</option></select><input value={artifactTitle} onChange={(event) => setArtifactTitle(event.target.value)} aria-label="Artifact title" maxLength={120} className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><textarea value={artifactContent} onChange={(event) => setArtifactContent(event.target.value)} aria-label="Artifact content" placeholder="Document the proposal for human review…" rows={2} maxLength={50000} className="sm:col-span-2 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><button disabled={busy || !artifactContent.trim()} className="rounded-lg border border-cyan-400/35 px-3 py-2 text-sm font-semibold text-cyan-200 disabled:opacity-40"><FileText className="mr-1 inline h-4 w-4" /> Save immutable revision</button></form>
+            <div className="mt-3 space-y-2">{artifacts.map((artifact) => <div key={artifact.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/8 px-3 py-2 text-sm"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span><button type="button" onClick={() => void approveCurrentArtifact(artifact)} disabled={busy || approvalReason.trim().length < 3} className="rounded-md bg-white/10 px-2 py-1 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-40">Approve current revision</button></div>)}</div>
+            {artifacts.length > 0 && <input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} aria-label="Approval reason" maxLength={2000} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-white" />}
+          </section>}
           <div className="flex-1 space-y-4 overflow-y-auto p-5 sm:p-7">
             {!workspace ? (
               <div className="grid h-full min-h-64 place-items-center text-center"><div><Bot className="mx-auto h-10 w-10 text-cyan-300" /><p className="mt-3 font-semibold text-white">Select or create a workspace</p><p className="mt-1 text-sm text-slate-500">Your durable conversation will appear here.</p></div></div>
