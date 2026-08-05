@@ -64,6 +64,25 @@ def test_conversation_and_messages_are_durable(client):
     assert messages[-2:] == [second["message"], second["acknowledgement"]]
 
 
+def test_workspace_supports_multiple_durable_conversations(client):
+    workspace = _create_workspace(client).json()["workspace"]
+    first = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/conversations",
+        json={"title": "Entry thesis"},
+    ).json()["conversation"]
+    second = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/conversations",
+        json={"title": "Exit thesis"},
+    ).json()["conversation"]
+
+    response = client.get(f"/api/copilot/workspaces/{workspace['id']}/conversations")
+    assert response.status_code == 200
+    assert {conversation["id"] for conversation in response.json()["conversations"]} == {
+        first["id"],
+        second["id"],
+    }
+
+
 def test_cross_owner_resources_are_not_disclosed(client):
     workspace = _create_workspace(client).json()["workspace"]
     conversation = client.post(

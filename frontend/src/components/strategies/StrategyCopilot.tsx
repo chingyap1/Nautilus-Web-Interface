@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useRef, useState } from 'react';
-import { Bot, Link2, MessageSquarePlus, Send, ShieldCheck, Sparkles } from 'lucide-react';
+import { Bot, Link2, MessageSquarePlus, Plus, Send, ShieldCheck, Sparkles } from 'lucide-react';
 import {
   copilotService,
   type CopilotConversation,
@@ -16,6 +16,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [workspaces, setWorkspaces] = useState<CopilotWorkspace[]>([]);
   const [workspace, setWorkspace] = useState<CopilotWorkspace | null>(null);
   const [conversation, setConversation] = useState<CopilotConversation | null>(null);
+  const [conversations, setConversations] = useState<CopilotConversation[]>([]);
   const [messages, setMessages] = useState<CopilotMessage[]>([]);
   const [title, setTitle] = useState('New strategy idea');
   const [strategyId, setStrategyId] = useState('');
@@ -43,6 +44,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     const version = ++selectionVersion.current;
     setWorkspace(next);
     setConversation(null);
+    setConversations([]);
     setMessages([]);
     setError(null);
     setLoadingWorkspace(true);
@@ -50,16 +52,52 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       const data = await copilotService.listConversations(next.id);
       let active = data.conversations[0];
       if (!active) active = (await copilotService.createConversation(next.id)).conversation;
-      const loadedMessages = (await copilotService.listMessages(active.id)).messages;
       if (version !== selectionVersion.current) return;
-      setConversation(active);
-      setMessages(loadedMessages);
+      setConversations(data.conversations.length ? data.conversations : [active]);
+      await selectConversation(active, version);
     } catch (reason) {
       if (version === selectionVersion.current) {
         setError(reason instanceof Error ? reason.message : 'Could not load workspace');
       }
     } finally {
       if (version === selectionVersion.current) setLoadingWorkspace(false);
+    }
+  }
+
+  async function selectConversation(next: CopilotConversation, version = ++selectionVersion.current) {
+    setConversation(next);
+    setMessages([]);
+    setError(null);
+    setLoadingWorkspace(true);
+    try {
+      const loadedMessages = (await copilotService.listMessages(next.id)).messages;
+      if (version !== selectionVersion.current) return;
+      setMessages(loadedMessages);
+    } catch (reason) {
+      if (version === selectionVersion.current) {
+        setError(reason instanceof Error ? reason.message : 'Could not load conversation');
+      }
+    } finally {
+      if (version === selectionVersion.current) setLoadingWorkspace(false);
+    }
+  }
+
+  async function createConversation() {
+    if (!workspace) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await copilotService.createConversation(
+        workspace.id,
+        `Discussion ${conversations.length + 1}`,
+      );
+      setConversations((current) => [created.conversation, ...current]);
+      await selectConversation(created.conversation);
+      await refreshWorkspaces();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not create conversation');
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -135,6 +173,11 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
             ))}
             {!workspaces.length && <p className="px-2 py-5 text-center text-sm text-slate-500">Create your first idea workspace.</p>}
           </div>
+
+          {workspace && <div className="mt-5 border-t border-white/8 pt-4">
+            <div className="mb-2 flex items-center justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wider text-slate-400">Discussions</span><button type="button" onClick={() => void createConversation()} disabled={busy || loadingWorkspace} className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-semibold text-cyan-300 hover:bg-cyan-400/10 disabled:opacity-50"><Plus className="h-3.5 w-3.5" /> New</button></div>
+            <div className="space-y-1">{conversations.map((item) => <button key={item.id} type="button" onClick={() => void selectConversation(item)} disabled={busy || loadingWorkspace} className={`w-full truncate rounded-lg px-3 py-2 text-left text-xs transition disabled:opacity-50 ${conversation?.id === item.id ? 'bg-cyan-400/10 font-semibold text-cyan-200' : 'text-slate-400 hover:bg-white/[0.04] hover:text-slate-200'}`}>{item.title}</button>)}</div>
+          </div>}
         </aside>
 
         <div className="flex min-h-[430px] flex-col">

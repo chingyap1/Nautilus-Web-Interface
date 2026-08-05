@@ -39,10 +39,10 @@ export const copilotService = {
     api.get<{ conversations: CopilotConversation[] }>(
       `/api/copilot/workspaces/${workspaceId}/conversations`,
     ),
-  createConversation: (workspaceId: string) =>
+  createConversation: (workspaceId: string, title = 'Strategy discussion') =>
     api.post<{ conversation: CopilotConversation }>(
       `/api/copilot/workspaces/${workspaceId}/conversations`,
-      {},
+      { title },
     ),
   listMessages: (conversationId: string) =>
     api.get<{ messages: CopilotMessage[] }>(
