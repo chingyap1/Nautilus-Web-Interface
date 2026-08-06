@@ -8,6 +8,7 @@ import {
   FlaskConical,
   Gauge,
   ListOrdered,
+  Radar,
   ShieldCheck,
   TerminalSquare,
   WalletCards,
@@ -30,6 +31,7 @@ const NAVIGATION: Array<{ label: string; items: NavItem[] }> = [
       { label: 'Commands & orders', href: '/trader/orders', icon: ListOrdered },
       { label: 'Positions', href: '/trader/positions', icon: WalletCards },
       { label: 'Risk controls', href: '/trader/risk', icon: ShieldCheck },
+      { label: 'Supervision', href: '/trader/supervision', icon: Radar },
     ],
   },
   {
@@ -59,6 +61,7 @@ const PAGE_TITLES: Record<string, { eyebrow: string; title: string }> = {
   '/trader/performance': { eyebrow: 'Observe', title: 'Performance' },
   '/trader/alerts': { eyebrow: 'Observe', title: 'Alerts' },
   '/trader/backtesting': { eyebrow: 'Research', title: 'Backtesting' },
+  '/trader/supervision': { eyebrow: 'Operate', title: 'Supervision' },
 };
 
 function isActiveRoute(location: string, href: string): boolean {

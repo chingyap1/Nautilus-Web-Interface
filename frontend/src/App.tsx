@@ -30,6 +30,7 @@ import MarketDataPage from "./pages/MarketDataPage";
 import PerformancePage from "./pages/PerformancePage";
 import AlertsPage from "./pages/AlertsPage";
 import BacktestingPage from "./pages/BacktestingPage";
+import SupervisionPage from "./pages/SupervisionPage";
 import UsersPage from "./pages/UsersPage";
 import LoginPage from "./pages/LoginPage";
 import { API_CONFIG } from "./config";
@@ -62,6 +63,7 @@ function Router() {
       <Route path="/trader/performance"><TraderLayout><PerformancePage /></TraderLayout></Route>
       <Route path="/trader/alerts"><TraderLayout><AlertsPage /></TraderLayout></Route>
       <Route path="/trader/backtesting"><TraderLayout><BacktestingPage /></TraderLayout></Route>
+      <Route path="/trader/supervision"><TraderLayout><SupervisionPage /></TraderLayout></Route>
       <Route path="/docs" component={DocsPage} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
