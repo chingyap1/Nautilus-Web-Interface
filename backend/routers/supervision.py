@@ -210,3 +210,15 @@ async def list_proposals(
         ],
         "count": len(supervision_proposals),
     }
+
+
+@router.get("/audit")
+async def get_audit_log(
+    _user: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Return recent audit log entries (read-only activity feed)."""
+    entries = mcp_adapter.audit.entries()
+    return {
+        "entries": entries,
+        "count": len(entries),
+    }
