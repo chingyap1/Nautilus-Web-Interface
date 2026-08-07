@@ -34,6 +34,7 @@ from routers import (
     copilot,
     database_ops,
     market_data,
+    mcp_actions,
     orders,
     positions,
     risk,
@@ -335,6 +336,7 @@ app.include_router(database_ops.router)
 app.include_router(components.router)
 app.include_router(users.router)
 app.include_router(supervision.router)
+app.include_router(mcp_actions.router)
 
 
 # ── Root endpoint ─────────────────────────────────────────────────────────────

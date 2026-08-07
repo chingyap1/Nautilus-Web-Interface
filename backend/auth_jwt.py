@@ -96,14 +96,15 @@ async def require_admin(payload: dict = Depends(get_current_user)) -> dict:
 
 
 async def require_approver(payload: dict = Depends(get_current_user)) -> dict:
-    """Dependency: verify JWT and require approver role (human principal only).
+    """Dependency: verify JWT and require approver role or higher (human principal only).
 
-    Service principals are structurally barred from approver (D6.4).
-    Raises 403 if the caller is not an approver or is a service principal.
+    ``approver`` and ``admin`` are both permitted. Service principals are
+    structurally barred from approver/admin (D6.4).
+    Raises 403 if the caller is not an approver/admin or is a service principal.
     """
     if payload.get("principal_type") == "service":
         raise HTTPException(status_code=403, detail="Service principals cannot approve")
-    if payload.get("role") != "approver":
+    if payload.get("role") not in ("approver", "admin"):
         raise HTTPException(status_code=403, detail="Approver role required")
     return payload
 
