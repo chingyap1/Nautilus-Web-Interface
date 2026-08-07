@@ -226,6 +226,7 @@ export default function SupervisionPage() {
             proposals={proposals}
             count={proposalsCount}
             loading={proposalsLoading}
+            onProposalsChanged={loadProposals}
           />
           <div className="rounded-2xl border border-white/8 bg-[#0d192a] p-5">
             <div className="flex items-center gap-2 text-xs text-slate-500">

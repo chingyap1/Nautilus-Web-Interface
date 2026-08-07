@@ -89,6 +89,37 @@ export interface PendingProposalsResponse {
   count: number;
 }
 
+// B5 response types — mirror routers/mcp_actions.py exactly
+
+export interface CommandApproval {
+  approval_id: string;
+  proposal_id: string;
+  payload_hash: string;
+  target_agent_id: string;
+  requester: string;
+  idempotency_key: string;
+  approver: string;
+  approved_at: string;
+  expires_at: string;
+  status: string;
+}
+
+export interface DispatchResult {
+  dispatch_id: string;
+  proposal_id: string;
+  approval_id: string;
+  command: string;
+  target_agent_id: string;
+  status: string;
+  dispatched_at: string;
+}
+
+export interface RejectResult {
+  proposal_id: string;
+  status: string;
+  reason: string;
+}
+
 // ---------------------------------------------------------------------------
 // Service — thin wrapper over the central API client (same as copilotService)
 // ---------------------------------------------------------------------------
@@ -104,4 +135,10 @@ export const supervisionService = {
     api.post<InterlockActionResponse>('/api/supervision/interlock/resume', { reason }),
   listProposals: () =>
     api.get<PendingProposalsResponse>('/api/supervision/proposals'),
+  approve: (proposalId: string, stepUpCode?: string) =>
+    api.post<CommandApproval>('/api/mcp/approvals', { proposal_id: proposalId, step_up_code: stepUpCode }),
+  dispatch: (approvalId: string) =>
+    api.post<DispatchResult>(`/api/mcp/approvals/${approvalId}/dispatch`),
+  reject: (proposalId: string, reason?: string) =>
+    api.post<RejectResult>(`/api/mcp/proposals/${proposalId}/reject`, { reason }),
 };
