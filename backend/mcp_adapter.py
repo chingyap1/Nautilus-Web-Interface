@@ -436,6 +436,10 @@ class MCPAdapter:
         record = asyncio_run(self._interlock.get())
         return evaluate_interlock(record, now=datetime.now(UTC))
 
+    def interlock_record(self) -> InterlockRecord | None:
+        """Return the full interlock record, or None if not initialized."""
+        return asyncio_run(self._interlock.get())
+
 
 # ---------------------------------------------------------------------------
 # Exceptions

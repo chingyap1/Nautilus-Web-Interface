@@ -64,6 +64,10 @@ export interface SupervisionResult {
 
 export interface InterlockState {
   state: 'paused' | 'resumed';
+  actor?: string;
+  reason?: string;
+  updated_at?: string;
+  lease_seconds?: number;
 }
 
 export interface InterlockActionResponse {
@@ -124,6 +128,19 @@ export interface RejectResult {
 // Service — thin wrapper over the central API client (same as copilotService)
 // ---------------------------------------------------------------------------
 
+export interface AuditEntry {
+  audit_id: string;
+  timestamp: string;
+  action: string;
+  actor: string;
+  detail: Record<string, unknown>;
+}
+
+export interface AuditLogResponse {
+  entries: AuditEntry[];
+  count: number;
+}
+
 export const supervisionService = {
   inspect: (pair: string, logDir?: string) =>
     api.post<SupervisionResult>('/api/supervision/inspect', { pair, log_dir: logDir }),
@@ -141,4 +158,6 @@ export const supervisionService = {
     api.post<DispatchResult>(`/api/mcp/approvals/${approvalId}/dispatch`),
   reject: (proposalId: string, reason?: string) =>
     api.post<RejectResult>(`/api/mcp/proposals/${proposalId}/reject`, { reason }),
+  getAuditLog: () =>
+    api.get<AuditLogResponse>('/api/supervision/audit'),
 };

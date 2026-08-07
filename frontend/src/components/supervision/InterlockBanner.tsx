@@ -88,6 +88,13 @@ export default function InterlockBanner({
                 {actionResponse.reason} · {formatTimestamp(actionResponse.updated_at)}
               </p>
             )}
+            {!actionResponse && state?.actor && (
+              <p className="mt-2 text-xs text-slate-500">
+                Last action by <span className="font-medium text-slate-300">{state.actor}</span>
+                {state.reason ? ` — ${state.reason}` : ''}
+                {state.updated_at ? ` · ${formatTimestamp(state.updated_at)}` : ''}
+              </p>
+            )}
             {loading && !state && (
               <p className="mt-2 text-xs text-slate-500">Checking interlock state…</p>
             )}

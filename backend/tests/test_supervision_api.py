@@ -350,6 +350,19 @@ class TestInterlockGet:
         assert r.status_code == 200
         assert r.json()["state"] == "paused"
 
+    def test_get_interlock_returns_extended_fields_after_engage(self, client):
+        """Extended response includes actor, reason, updated_at, lease_seconds."""
+        client.post("/api/supervision/interlock/engage", json={"reason": "emergency stop"})
+        r = client.get("/api/supervision/interlock")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["state"] == "paused"
+        assert body["reason"] == "emergency stop"
+        assert "actor" in body
+        assert "updated_at" in body
+        assert "lease_seconds" in body
+        assert isinstance(body["lease_seconds"], (int, float))
+
     def test_get_interlock_viewer_allowed(self, viewer_client):
         r = viewer_client.get("/api/supervision/interlock")
         assert r.status_code == 200
@@ -504,3 +517,56 @@ class TestNoDispatchOrApprove:
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
         assert "dispatch" not in actions
         assert "approve" not in actions
+
+
+# ---------------------------------------------------------------------------
+# 7. GET /api/supervision/audit
+# ---------------------------------------------------------------------------
+
+
+class TestAuditLog:
+    """GET /api/supervision/audit — return audit log entries."""
+
+    def test_get_audit_returns_entries(self, client):
+        """Audit endpoint returns entries after engage/resume."""
+        client.post("/api/supervision/interlock/engage", json={"reason": "test"})
+        client.post("/api/supervision/interlock/resume", json={"reason": "done"})
+
+        r = client.get("/api/supervision/audit")
+        assert r.status_code == 200
+        body = r.json()
+        assert "entries" in body
+        assert body["count"] >= 2
+        actions = [e["action"] for e in body["entries"]]
+        assert "interlock_engage" in actions
+        assert "interlock_resume" in actions
+
+    def test_get_audit_entry_shape(self, client):
+        """Each audit entry has audit_id, timestamp, action, actor, detail."""
+        client.post("/api/supervision/interlock/engage", json={"reason": "test"})
+
+        r = client.get("/api/supervision/audit")
+        assert r.status_code == 200
+        entries = r.json()["entries"]
+        assert len(entries) >= 1
+        entry = entries[-1]
+        assert "audit_id" in entry
+        assert "timestamp" in entry
+        assert "action" in entry
+        assert "actor" in entry
+        assert "detail" in entry
+
+    def test_get_audit_viewer_allowed(self, viewer_client):
+        """Viewer role can read the audit log (read-only)."""
+        r = viewer_client.get("/api/supervision/audit")
+        assert r.status_code == 200
+
+    def test_get_audit_empty_structure(self, viewer_client):
+        """Audit endpoint returns valid structure even when no user actions taken."""
+        r = viewer_client.get("/api/supervision/audit")
+        assert r.status_code == 200
+        body = r.json()
+        assert "entries" in body
+        assert "count" in body
+        assert isinstance(body["entries"], list)
+        assert body["count"] == len(body["entries"])

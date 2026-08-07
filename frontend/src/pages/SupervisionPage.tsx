@@ -9,6 +9,7 @@ import AgentHealthCard from '@/components/supervision/AgentHealthCard';
 import MetricsCard from '@/components/supervision/MetricsCard';
 import RecommendationCard from '@/components/supervision/RecommendationCard';
 import PendingProposalsList from '@/components/supervision/PendingProposalsList';
+import AuditFeed from '@/components/supervision/AuditFeed';
 
 export default function SupervisionPage() {
   // Agent pair selector — derived from operations snapshot (same source as TraderDashboard)
@@ -239,6 +240,7 @@ export default function SupervisionPage() {
               design constraint.
             </p>
           </div>
+          <AuditFeed />
         </div>
       </section>
     </div>
