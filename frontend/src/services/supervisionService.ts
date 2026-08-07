@@ -64,6 +64,10 @@ export interface SupervisionResult {
 
 export interface InterlockState {
   state: 'paused' | 'resumed';
+  actor?: string;
+  reason?: string;
+  updated_at?: string;
+  lease_seconds?: number;
 }
 
 export interface InterlockActionResponse {

@@ -119,9 +119,16 @@ async def inspect(
 async def get_interlock(
     _user: dict = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Return the current interlock state (PAUSED or RESUMED)."""
+    """Return the current interlock state and metadata (PAUSED or RESUMED)."""
     state = mcp_adapter.interlock_state()
-    return {"state": state.value}
+    record = mcp_adapter.interlock_record()
+    resp: dict[str, Any] = {"state": state.value}
+    if record is not None:
+        resp["actor"] = record.actor
+        resp["reason"] = record.reason
+        resp["updated_at"] = record.updated_at
+        resp["lease_seconds"] = record.lease_seconds
+    return resp
 
 
 @router.post("/interlock/engage")

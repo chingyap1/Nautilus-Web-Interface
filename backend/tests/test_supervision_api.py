@@ -350,6 +350,19 @@ class TestInterlockGet:
         assert r.status_code == 200
         assert r.json()["state"] == "paused"
 
+    def test_get_interlock_returns_extended_fields_after_engage(self, client):
+        """Extended response includes actor, reason, updated_at, lease_seconds."""
+        client.post("/api/supervision/interlock/engage", json={"reason": "emergency stop"})
+        r = client.get("/api/supervision/interlock")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["state"] == "paused"
+        assert body["reason"] == "emergency stop"
+        assert "actor" in body
+        assert "updated_at" in body
+        assert "lease_seconds" in body
+        assert isinstance(body["lease_seconds"], (int, float))
+
     def test_get_interlock_viewer_allowed(self, viewer_client):
         r = viewer_client.get("/api/supervision/interlock")
         assert r.status_code == 200
