@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   Activity,
   ClipboardCheck,
@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 import { useIsIpadShell } from './useMinWidth';
+import { isTokenExpiringSoon, tokenExpiresAtMs } from './session';
 
 type Tab = {
   label: string;
@@ -36,6 +37,14 @@ interface MobileOpsLayoutProps {
 export default function MobileOpsLayout({ children }: MobileOpsLayoutProps) {
   const [location] = useLocation();
   const ipad = useIsIpadShell();
+  const [expiringSoon, setExpiringSoon] = useState(() => isTokenExpiringSoon());
+
+  useEffect(() => {
+    const tick = () => setExpiringSoon(isTokenExpiringSoon());
+    tick();
+    const id = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(id);
+  }, []);
 
   return (
     <div className="mobile-ops-theme min-h-dvh bg-[var(--mops-canvas)] text-[var(--mops-text)]">
@@ -60,6 +69,7 @@ export default function MobileOpsLayout({ children }: MobileOpsLayoutProps) {
             </div>
             <PaperBadge />
           </div>
+          {expiringSoon ? <SessionExpiryBanner /> : null}
         </header>
 
         {ipad ? (
@@ -75,6 +85,7 @@ export default function MobileOpsLayout({ children }: MobileOpsLayoutProps) {
               <div className="mt-3">
                 <PaperBadge />
               </div>
+              {expiringSoon ? <div className="mt-3"><SessionExpiryBanner compact /></div> : null}
             </div>
             <nav className="flex flex-1 flex-col gap-1">
               {TABS.map(({ label, href, icon: Icon }) => {
@@ -147,5 +158,21 @@ function PaperBadge() {
     >
       Paper
     </span>
+  );
+}
+
+function SessionExpiryBanner({ compact }: { compact?: boolean }) {
+  const expMs = tokenExpiresAtMs();
+  const when = expMs !== null ? new Date(expMs).toLocaleTimeString() : 'soon';
+  return (
+    <p
+      className={`rounded-lg border border-amber-400/30 bg-amber-400/10 text-amber-100 ${
+        compact ? 'mt-0 px-2 py-1.5 text-[11px] leading-snug' : 'mt-3 px-3 py-2 text-xs'
+      }`}
+      data-testid="mops-session-expiry-banner"
+      role="status"
+    >
+      Session expires {when}. Open Account to re-authenticate before mutations.
+    </p>
   );
 }

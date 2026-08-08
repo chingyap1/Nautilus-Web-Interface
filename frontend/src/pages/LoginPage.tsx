@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { API_CONFIG } from '../config';
+import { consumeSessionReason, sessionReasonMessage } from '../mobile/session';
 
 interface LoginPageProps {
   onLogin: (token: string, role: string) => void;
@@ -12,6 +13,11 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [requires2fa, setRequires2fa] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSessionNotice(sessionReasonMessage(consumeSessionReason()));
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,6 +76,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           <h1 className="text-3xl font-bold text-gray-900">Nautilus Trader</h1>
           <p className="text-gray-500 mt-1">Web Interface</p>
         </div>
+
+        {sessionNotice ? (
+          <div
+            className="mb-5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+            data-testid="session-expired-notice"
+            role="status"
+          >
+            {sessionNotice}
+          </div>
+        ) : null}
 
         <form onSubmit={handleSubmit} className="space-y-5">
           {!requires2fa ? (
