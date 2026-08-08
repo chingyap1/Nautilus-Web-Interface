@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
@@ -6,6 +6,22 @@ import MobileOpsLayout from '@/mobile/MobileOpsLayout';
 import { isPaperMode, type OperationsSnapshot } from '@/mobile/types';
 
 describe('Mobile Ops scaffold', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'matchMedia', {
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: false,
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+  });
+
   it('renders brand and bottom tabs without TraderLayout chrome', () => {
     const { hook } = memoryLocation({ path: '/m/status' });
     render(
