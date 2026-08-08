@@ -251,6 +251,8 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       const nextArtifacts = [result.artifact, ...artifacts];
       setArtifacts(nextArtifacts);
       await refreshReviewState(nextArtifacts);
+      const lifecycle = await copilotService.lifecycle(workspace.id);
+      setEligibility(lifecycle.eligibility);
       setExperimentSummary(result.summary);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Experiment failed');
