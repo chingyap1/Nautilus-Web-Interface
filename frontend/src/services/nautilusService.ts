@@ -192,6 +192,27 @@ export const nautilusService = {
     );
   },
 
+  /** Paper emergency — same handler as desktop / Mobile Ops Controls (§8.3). */
+  async activateKillSwitch() {
+    return api.post<{
+      success: boolean;
+      command_id: string;
+      status: string;
+      message: string;
+    }>('/api/kill-switch', {});
+  },
+
+  /** Paper emergency flatten for one NWI strategy id (§8.3). */
+  async flattenStrategy(strategyId: string) {
+    return api.post<{
+      success: boolean;
+      command_id: string;
+      strategy_id: string;
+      status: string;
+      message: string;
+    }>(`/api/strategies/${encodeURIComponent(strategyId)}/flatten`, {});
+  },
+
   // Backtest operations
   async runBacktest(request: BacktestRequest) {
     return api.post<{ success: boolean; message: string; result?: BacktestResult }>(
