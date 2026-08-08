@@ -164,6 +164,17 @@ async def init_db() -> None:
                 expires_at  TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS push_subscriptions (
+                id          TEXT PRIMARY KEY,
+                username    TEXT NOT NULL,
+                endpoint    TEXT NOT NULL UNIQUE,
+                p256dh      TEXT NOT NULL,
+                auth        TEXT NOT NULL,
+                user_agent  TEXT NOT NULL DEFAULT '',
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS copilot_workspaces (
                 id           TEXT PRIMARY KEY,
                 owner_id     TEXT NOT NULL,
@@ -219,6 +230,8 @@ async def init_db() -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_revoked_tokens_expires ON revoked_tokens(expires_at);
+            CREATE INDEX IF NOT EXISTS idx_push_subscriptions_username
+                ON push_subscriptions(username);
 
             CREATE INDEX IF NOT EXISTS idx_orders_status    ON orders(status);
             CREATE INDEX IF NOT EXISTS idx_orders_timestamp ON orders(timestamp);
@@ -1088,3 +1101,86 @@ async def purge_expired_revoked_tokens() -> int:
         )
         await db.commit()
         return cur.rowcount
+
+
+# ── Web Push subscriptions (Mobile Ops Account opt-in) ────────────────────────
+
+async def upsert_push_subscription(
+    username: str,
+    endpoint: str,
+    p256dh: str,
+    auth: str,
+    user_agent: str = "",
+) -> Dict[str, Any]:
+    """Insert or update a Web Push subscription for a user (keyed by endpoint)."""
+    now = datetime.now(timezone.utc).isoformat()
+    sub_id = f"PUSH-{uuid.uuid4().hex[:12]}"
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id FROM push_subscriptions WHERE endpoint=?", (endpoint,)
+        ) as cur:
+            existing = await cur.fetchone()
+        if existing:
+            await db.execute(
+                """
+                UPDATE push_subscriptions
+                SET username=?, p256dh=?, auth=?, user_agent=?, updated_at=?
+                WHERE endpoint=?
+                """,
+                (username, p256dh, auth, user_agent, now, endpoint),
+            )
+            sub_id = existing["id"]
+        else:
+            await db.execute(
+                """
+                INSERT INTO push_subscriptions
+                    (id, username, endpoint, p256dh, auth, user_agent, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (sub_id, username, endpoint, p256dh, auth, user_agent, now, now),
+            )
+        await db.commit()
+        async with db.execute(
+            "SELECT id, username, endpoint, created_at, updated_at FROM push_subscriptions WHERE id=?",
+            (sub_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else {"id": sub_id, "username": username, "endpoint": endpoint}
+
+
+async def delete_push_subscription(username: str, endpoint: str) -> bool:
+    """Delete a subscription owned by username. Returns True if a row was removed."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM push_subscriptions WHERE username=? AND endpoint=?",
+            (username, endpoint),
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def count_push_subscriptions(username: str) -> int:
+    """Return how many push endpoints are registered for username."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM push_subscriptions WHERE username=?",
+            (username,),
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def list_push_subscriptions(username: str) -> List[Dict[str, Any]]:
+    """List push subscriptions for a user (includes keys — server-side send only)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id, username, endpoint, p256dh, auth, user_agent, created_at, updated_at
+            FROM push_subscriptions WHERE username=? ORDER BY updated_at DESC
+            """,
+            (username,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]

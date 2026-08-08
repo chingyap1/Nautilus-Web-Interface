@@ -37,6 +37,7 @@ from routers import (
     mcp_actions,
     orders,
     positions,
+    push,
     risk,
     strategies,
     supervision,
@@ -337,6 +338,7 @@ app.include_router(components.router)
 app.include_router(users.router)
 app.include_router(supervision.router)
 app.include_router(mcp_actions.router)
+app.include_router(push.router)
 
 
 # ── Root endpoint ─────────────────────────────────────────────────────────────
