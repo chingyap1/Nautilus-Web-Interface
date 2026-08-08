@@ -25,11 +25,15 @@ LIFECYCLES = (
     "APPROVED_FOR_PAPER",
     "PAPER_OBSERVATION",
     "ELIGIBLE_FOR_LIVE",
+    "REJECTED",
 )
 # Kept for display/docs only — do not grow as a second FSM (D13).
+# Authoritative UI edges live in ``copilot_promotion.TRANSITIONS_UI``.
 TRANSITIONS = {
     "IDEA": ("SPECIFICATION", "specification"),
     "SPECIFICATION": ("DRAFT", "strategy_draft"),
+    "DRAFT": ("VALIDATING", "validation_report"),
+    "VALIDATING": ("CANDIDATE", "candidate_bundle"),
 }
 
 
@@ -310,11 +314,12 @@ def build_supervisor_messages(
         "interlock, or modify live agent config. "
         "Research tools (run_backtest, run_walk_forward, compare_strategies, "
         "optimise_params, registry_status, propose_registry_patch, "
-        "propose_strategy_patch) may be suggested; the operator can also run "
-        "them via the workspace Run experiment controls. Registry and "
+        "propose_strategy_patch, run_validation) may be suggested; the "
+        "operator can also run them via workspace controls. Registry and "
         "strategy-code patches require human approve+apply and never git "
-        "push. Strategy code drafts use allowlisted templates only. Never "
-        "claim a paper deploy occurred.\n\n"
+        "push. Mid-gates DRAFT→VALIDATING→CANDIDATE need approved "
+        "validation_report then candidate_bundle; paper deploy stays on the "
+        "Supervision path. Never claim a paper deploy occurred.\n\n"
         f"Workspace title: {workspace.get('title', '')}\n"
         f"Lifecycle: {workspace.get('lifecycle', 'IDEA')}\n"
         f"Promotion id: {workspace.get('promotion_id') or 'none'}\n"
@@ -497,8 +502,14 @@ async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
     kind = rule[1] if rule else None
     async with aiosqlite.connect(database.DB_PATH) as db:
         approved = bool(kind and await _has_current_approval(db, workspace["id"], kind))
+        evidence_ok, evidence_reason = await _midgate_evidence_ok(
+            db, workspace["id"], kind, promotion
+        )
     return copilot_promotion.transition_eligibility(
-        promotion, artifact_approved=approved
+        promotion,
+        artifact_approved=approved,
+        evidence_ok=evidence_ok,
+        evidence_reason=evidence_reason,
     )
 
 
@@ -533,6 +544,12 @@ async def advance_lifecycle(workspace: dict[str, Any], owner_id: str) -> dict[st
                 return None
             target, kind = rule
             if not await _has_current_approval(db, workspace["id"], kind):
+                await db.rollback()
+                return None
+            evidence_ok, _ = await _midgate_evidence_ok(
+                db, workspace["id"], kind, promotion
+            )
+            if not evidence_ok:
                 await db.rollback()
                 return None
             payload_hash = await _current_artifact_hash(db, workspace["id"], kind)
@@ -630,6 +647,60 @@ async def create_from_supervision(
         "artifact": artifact,
         "revision": revision,
     }
+
+
+async def _midgate_evidence_ok(
+    db: aiosqlite.Connection,
+    workspace_id: str,
+    kind: str | None,
+    promotion: Any,
+) -> tuple[bool, str]:
+    """Extra evidence checks for S6 mid-gates beyond artifact approval."""
+    if kind == "validation_report":
+        content = await _current_artifact_content(db, workspace_id, kind)
+        if not content:
+            return False, "Run validation to produce a validation_report first."
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return False, "validation_report content must be JSON."
+        if not isinstance(payload, dict) or payload.get("kind") != "validation_report":
+            return False, "Artifact is not a validation_report."
+        if not payload.get("passed"):
+            return False, "Validation did not pass — fix failures before advancing."
+        return True, ""
+    if kind == "candidate_bundle":
+        if not promotion.candidate_bundle:
+            return False, "Create a candidate bundle on this promotion first."
+        content = await _current_artifact_content(db, workspace_id, kind)
+        if not content:
+            return False, "Candidate bundle artifact missing — create the bundle again."
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return False, "candidate_bundle content must be JSON."
+        if not isinstance(payload, dict) or payload.get("kind") != "candidate_bundle":
+            return False, "Artifact is not a candidate_bundle."
+        expected = promotion.candidate_bundle.get("payload_hash")
+        if expected and payload.get("payload_hash") != expected:
+            return False, "Bundle artifact hash does not match the promotion record."
+        return True, ""
+    return True, ""
+
+
+async def _current_artifact_content(
+    db: aiosqlite.Connection, workspace_id: str, kind: str
+) -> str | None:
+    async with db.execute(
+        """SELECT r.content FROM copilot_artifacts a
+           JOIN copilot_artifact_revisions r
+             ON r.artifact_id = a.id AND r.revision = a.current_revision
+           WHERE a.workspace_id = ? AND a.kind = ?
+           ORDER BY a.updated_at DESC LIMIT 1""",
+        (workspace_id, kind),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row[0] if row else None
 
 
 async def _has_current_approval(db: aiosqlite.Connection, workspace_id: str, kind: str) -> bool:

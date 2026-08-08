@@ -11,13 +11,15 @@ export interface CopilotWorkspace {
   updated_at: string;
 }
 
-export type CopilotLifecycle = 'IDEA' | 'SPECIFICATION' | 'DRAFT' | 'VALIDATING' | 'CANDIDATE' | 'APPROVED_FOR_PAPER' | 'PAPER_OBSERVATION' | 'ELIGIBLE_FOR_LIVE';
+export type CopilotLifecycle = 'IDEA' | 'SPECIFICATION' | 'DRAFT' | 'VALIDATING' | 'CANDIDATE' | 'APPROVED_FOR_PAPER' | 'PAPER_OBSERVATION' | 'ELIGIBLE_FOR_LIVE' | 'REJECTED';
 export type CopilotArtifactKind =
   | 'specification'
   | 'strategy_draft'
   | 'experiment_result'
   | 'comparison_table'
-  | 'optuna_summary';
+  | 'optuna_summary'
+  | 'validation_report'
+  | 'candidate_bundle';
 
 export type CopilotResearchTool =
   | 'run_backtest'
@@ -26,7 +28,8 @@ export type CopilotResearchTool =
   | 'optimise_params'
   | 'registry_status'
   | 'propose_registry_patch'
-  | 'propose_strategy_patch';
+  | 'propose_strategy_patch'
+  | 'run_validation';
 
 export interface CopilotArtifact { id: string; workspace_id: string; kind: CopilotArtifactKind; title: string; current_revision: number; created_at: string; updated_at: string; }
 export interface CopilotArtifactRevision { id: string; artifact_id: string; revision: number; content: string; content_hash: string; created_by: string; created_at: string; }
@@ -157,6 +160,29 @@ export const copilotService = {
       dry_run: dryRun,
       also_registry: alsoRegistry,
     }),
+  createCandidateBundle: (workspaceId: string, baseRef = 'HEAD', includeUntracked = true) =>
+    api.post<{
+      bundle: {
+        kind: string;
+        payload_hash: string;
+        base_ref: string;
+        commit_sha: string;
+        untracked_files: string[];
+        git_push: boolean;
+        paper_deploy: boolean;
+      };
+      artifact: CopilotArtifact;
+      revision: CopilotArtifactRevision;
+      workspace: CopilotWorkspace;
+    }>(`/api/copilot/workspaces/${workspaceId}/bundle`, {
+      base_ref: baseRef,
+      include_untracked: includeUntracked,
+    }),
   lifecycle: (workspaceId: string) => api.get<{ workspace: CopilotWorkspace; eligibility: CopilotEligibility; transitions: CopilotTransition[] }>(`/api/copilot/workspaces/${workspaceId}/lifecycle`),
   advanceLifecycle: (workspaceId: string) => api.post<{ workspace: CopilotWorkspace; transition: CopilotTransition }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/advance`, {}),
+  rejectLifecycle: (workspaceId: string, reason: string) =>
+    api.post<{
+      workspace: CopilotWorkspace;
+      transition: CopilotTransition;
+    }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/reject`, { reason }),
 };

@@ -236,6 +236,8 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
         params.strategy_key = draftStrategyKey.trim();
         params.template = 'risk_long_only';
         params.include_test = true;
+      } else if (experimentTool === 'run_validation') {
+        params.steps = ['ruff', 'mypy'];
       } else if (
         experimentTool !== 'registry_status' &&
         experimentTool !== 'propose_registry_patch'
@@ -287,7 +289,62 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       const result = await copilotService.advanceLifecycle(workspace.id);
       setWorkspace(result.workspace); setWorkspaces((current) => current.map((item) => item.id === result.workspace.id ? result.workspace : item));
       const lifecycle = await copilotService.lifecycle(workspace.id); setEligibility(lifecycle.eligibility);
+      if (result.workspace.lifecycle === 'CANDIDATE') {
+        setExperimentSummary('Reached CANDIDATE. Paper deploy remains on the Supervision approve/dispatch path — not Copilot Advance.');
+      }
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not advance lifecycle'); } finally { setBusy(false); }
+  }
+
+  async function createCandidateBundle() {
+    if (!workspace) return;
+    setBusy(true);
+    setError(null);
+    setExperimentSummary(null);
+    try {
+      const result = await copilotService.createCandidateBundle(workspace.id);
+      const nextArtifacts = [result.artifact, ...artifacts];
+      setArtifacts(nextArtifacts);
+      await refreshReviewState(nextArtifacts);
+      const lifecycle = await copilotService.lifecycle(workspace.id);
+      setEligibility(lifecycle.eligibility);
+      setExperimentSummary(
+        `Candidate bundle ${result.bundle.payload_hash} created (review-only). Approve it, then Advance to CANDIDATE. No git push / paper deploy.`,
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not create candidate bundle');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectLifecycle() {
+    if (!workspace) return;
+    const reason = approvalReason.trim();
+    if (reason.length < 3) {
+      setError('Provide a rejection reason (min 3 characters) in the approval reason field.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await copilotService.rejectLifecycle(workspace.id, reason);
+      setWorkspace(result.workspace);
+      setWorkspaces((current) =>
+        current.map((item) => (item.id === result.workspace.id ? result.workspace : item)),
+      );
+      setEligibility({
+        eligible: false,
+        target: null,
+        reason: 'Workspace rejected',
+        promotion_id: result.workspace.promotion_id,
+        promotion_state: 'REJECTED',
+      });
+      setExperimentSummary('Promotion rejected from Copilot. No paper deploy occurred.');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not reject lifecycle');
+    } finally {
+      setBusy(false);
+    }
   }
 
   function draftKind(artifact: CopilotArtifact): string | null {
@@ -351,9 +408,9 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
           <div className="flex gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-cyan-400 text-slate-950"><Sparkles /></span>
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Strategy discovery · S1–S5</p>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Strategy discovery · S1–S6</p>
               <h2 className="mt-1 text-2xl font-bold text-white">Build with Copilot</h2>
-              <p className="mt-2 max-w-2xl text-sm text-slate-400">Chat with the Supervisor, run bounded experiments, and apply approved registry or template strategy-code patches. No paper commands, trading actions, or git push from this workspace.</p>
+              <p className="mt-2 max-w-2xl text-sm text-slate-400">Chat, run experiments, apply template drafts, validate, and advance to CANDIDATE. Paper deploy stays on the Supervision path. No trading actions or git push from this workspace.</p>
             </div>
           </div>
           <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300"><ShieldCheck className="h-4 w-4" /> Advisory only</span>
@@ -390,7 +447,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
 
         <div className="flex min-h-[430px] flex-col">
           {workspace && !loadingWorkspace && <section className="border-b border-white/8 bg-white/[0.02] p-4 sm:p-5" aria-label="Artifact review workflow">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">D13 promotion lifecycle</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}{workspace.promotion_id ? <span className="ml-2 font-mono text-xs text-slate-500">{workspace.promotion_id}</span> : null}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">D13 promotion lifecycle</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}{workspace.promotion_id ? <span className="ml-2 font-mono text-xs text-slate-500">{workspace.promotion_id}</span> : null}</p></div><div className="flex flex-wrap gap-2">{(workspace.lifecycle === 'DRAFT' || workspace.lifecycle === 'VALIDATING') && <button type="button" onClick={() => void createCandidateBundle()} disabled={busy || workspace.lifecycle === 'REJECTED'} className="inline-flex items-center gap-2 rounded-lg border border-violet-400/35 bg-violet-400/10 px-3 py-2 text-sm font-semibold text-violet-100 disabled:opacity-40">Create bundle</button>}{workspace.lifecycle !== 'REJECTED' && workspace.lifecycle !== 'CANDIDATE' && <button type="button" onClick={() => void rejectLifecycle()} disabled={busy} className="inline-flex items-center gap-2 rounded-lg border border-rose-400/30 bg-rose-400/10 px-3 py-2 text-sm font-semibold text-rose-200 disabled:opacity-40">Reject</button>}{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div></div>
             {eligibility && !eligibility.eligible && <p className="mt-2 text-xs text-amber-300">{eligibility.reason}</p>}
             <form onSubmit={runExperiment} className="mt-4 grid gap-2 sm:grid-cols-3" aria-label="Run experiment">
               <select value={experimentTool} onChange={(event) => setExperimentTool(event.target.value as CopilotResearchTool)} aria-label="Experiment tool" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white">
@@ -401,6 +458,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
                 <option value="registry_status">Registry status</option>
                 <option value="propose_registry_patch">Propose registry patch</option>
                 <option value="propose_strategy_patch">Propose strategy code</option>
+                <option value="run_validation">Run validation</option>
               </select>
               {experimentTool === 'propose_strategy_patch' ? (
                 <input
@@ -411,7 +469,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
                   className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white"
                 />
               ) : (
-                <select value={experimentStrategy} onChange={(event) => setExperimentStrategy(event.target.value)} aria-label="Strategy" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" disabled={experimentTool === 'registry_status' || experimentTool === 'propose_registry_patch'}>
+                <select value={experimentStrategy} onChange={(event) => setExperimentStrategy(event.target.value)} aria-label="Strategy" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" disabled={experimentTool === 'registry_status' || experimentTool === 'propose_registry_patch' || experimentTool === 'run_validation'}>
                   <option value="ma_cross">ma_cross</option>
                   <option value="rsi">rsi</option>
                   <option value="breakout">breakout</option>

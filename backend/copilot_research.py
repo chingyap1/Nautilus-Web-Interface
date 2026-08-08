@@ -27,6 +27,10 @@ MAX_WALK_FORWARD_SPLITS = 4
 MAX_OPTUNA_TRIALS = 20
 MAX_COMPARE_STRATEGIES = 5
 DEFAULT_TOOL_TIMEOUT_SECONDS = float(os.getenv("COPILOT_RESEARCH_TIMEOUT", "120"))
+MAX_VALIDATION_STEPS = 3
+ALLOWED_VALIDATION_STEPS = frozenset({"ruff", "mypy", "pytest"})
+DEFAULT_VALIDATION_STEPS = ("ruff", "mypy")
+VALIDATION_STEP_TIMEOUT_SECONDS = float(os.getenv("COPILOT_VALIDATION_STEP_TIMEOUT", "90"))
 
 
 def _default_framework_root() -> Path:
@@ -53,6 +57,8 @@ ARTIFACT_KIND_BY_TOOL = {
     "propose_registry_patch": "strategy_draft",
     # S5 / fuller O3 — allowlisted strategy-code draft; apply is human-gated.
     "propose_strategy_patch": "strategy_draft",
+    # S6 — mid-gate validation (inplace pipeline; worktree remains CLI).
+    "run_validation": "validation_report",
 }
 
 ALLOWED_TOOLS = frozenset(ARTIFACT_KIND_BY_TOOL)
@@ -60,9 +66,16 @@ ALLOWED_TOOLS = frozenset(ARTIFACT_KIND_BY_TOOL)
 RESEARCH_ARTIFACT_KINDS = frozenset(
     {"experiment_result", "comparison_table", "optuna_summary"}
 )
-ALL_ARTIFACT_KINDS = RESEARCH_ARTIFACT_KINDS | {"specification", "strategy_draft"}
+ALL_ARTIFACT_KINDS = RESEARCH_ARTIFACT_KINDS | {
+    "specification",
+    "strategy_draft",
+    "validation_report",
+    "candidate_bundle",
+}
 REGISTRY_PATCH_KIND = "registry_patch"
 STRATEGY_CODE_PATCH_KIND = "strategy_code_patch"
+VALIDATION_REPORT_KIND = "validation_report"
+CANDIDATE_BUNDLE_KIND = "candidate_bundle"
 
 BarLoader = Callable[[str, str, int], pd.DataFrame]
 _bar_loader: BarLoader | None = None
@@ -247,6 +260,27 @@ def tool_schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_validation",
+                "description": (
+                    "Run allowlisted engineering validation steps (ruff/mypy/pytest) "
+                    "on the framework root and store a validation_report (S6). "
+                    "Does not git push. Isolated worktrees remain CLI-only."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Subset of ruff, mypy, pytest (default ruff,mypy)",
+                        }
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -304,6 +338,8 @@ def _dispatch(tool: str, params: dict[str, Any]) -> ResearchResult:
         return _propose_registry_patch(params)
     if tool == "propose_strategy_patch":
         return _propose_strategy_patch(params)
+    if tool == "run_validation":
+        return _run_validation(params)
     raise ResearchToolError(f"unhandled tool: {tool}")
 
 
@@ -839,3 +875,128 @@ def apply_approved_strategy_patch(
         raise ResearchToolError(str(exc)) from exc
     result["framework_root"] = str(FRAMEWORK_ROOT)
     return result
+
+
+def _parse_validation_steps(params: dict[str, Any]) -> list[str]:
+    raw = params.get("steps")
+    if raw is None:
+        steps = list(DEFAULT_VALIDATION_STEPS)
+    elif not isinstance(raw, list) or not raw:
+        raise ResearchToolError("steps must be a non-empty list of step names")
+    else:
+        steps = [str(item).strip().lower() for item in raw]
+    if len(steps) > MAX_VALIDATION_STEPS:
+        raise ResearchBudgetError(
+            f"steps exceeds budget (max {MAX_VALIDATION_STEPS})"
+        )
+    unknown = [s for s in steps if s not in ALLOWED_VALIDATION_STEPS]
+    if unknown:
+        raise ResearchToolError(
+            f"validation steps not allowlisted: {unknown} "
+            f"(allowed: {sorted(ALLOWED_VALIDATION_STEPS)})"
+        )
+    return steps
+
+
+def _run_validation(params: dict[str, Any]) -> ResearchResult:
+    """Run allowlisted lint/type/test steps in-place on FRAMEWORK_ROOT (S6).
+
+    Uses ``engineering.runner.run_pipeline`` (no git worktree). Isolated
+    worktree jobs remain available via ``engineering.worker.run_steps`` / CLI.
+    """
+    from engineering.models import ValidationStep
+    from engineering.runner import CommandRunnerError, run_pipeline
+
+    steps = _parse_validation_steps(params)
+    started = time.monotonic()
+    try:
+        results = run_pipeline(
+            cwd=FRAMEWORK_ROOT,
+            steps=[ValidationStep(s) for s in steps],
+            default_timeout=VALIDATION_STEP_TIMEOUT_SECONDS,
+        )
+    except CommandRunnerError as exc:
+        raise ResearchToolError(str(exc)) from exc
+
+    commands = [
+        {
+            "step": c.step.value,
+            "returncode": c.returncode,
+            "passed": c.passed,
+            "duration_seconds": c.duration_seconds,
+            "stdout_tail": (c.stdout or "")[-800:],
+            "stderr_tail": (c.stderr or "")[-800:],
+        }
+        for c in results
+    ]
+    passed = bool(results) and all(c.passed for c in results)
+    payload = {
+        "kind": VALIDATION_REPORT_KIND,
+        "framework_root": str(FRAMEWORK_ROOT),
+        "mode": "inplace_pipeline",
+        "steps": steps,
+        "passed": passed,
+        "commands": commands,
+        "duration_seconds": round(time.monotonic() - started, 3),
+        "git_push": False,
+        "worktree": False,
+    }
+    metrics = {
+        "passed": passed,
+        "steps": steps,
+        "failed_steps": [c["step"] for c in commands if not c["passed"]],
+        "mode": "inplace_pipeline",
+        "git_push": False,
+    }
+    summary = (
+        f"Validation {'PASSED' if passed else 'FAILED'} "
+        f"({', '.join(steps)}) on framework root — no git push"
+    )
+    return ResearchResult(
+        tool="run_validation",
+        artifact_kind=VALIDATION_REPORT_KIND,
+        title="Validation report",
+        content=_json_content(payload),
+        summary=summary,
+        metrics=metrics,
+    )
+
+
+def build_candidate_bundle(
+    *,
+    base_ref: str = "HEAD",
+    include_untracked: bool = True,
+) -> dict[str, Any]:
+    """Build a review-only candidate bundle against FRAMEWORK_ROOT (S6)."""
+    from promotion.bundler import BundleError, create_candidate_bundle
+
+    try:
+        bundle = create_candidate_bundle(
+            FRAMEWORK_ROOT,
+            base_ref=base_ref,
+            include_untracked=include_untracked,
+        )
+    except BundleError as exc:
+        raise ResearchToolError(str(exc)) from exc
+
+    # Truncate huge diffs for artifact storage (full hash still covers content).
+    diff = bundle.get("diff") or ""
+    diff_truncated = False
+    if len(diff) > 40_000:
+        bundle = {**bundle, "diff": diff[:40_000] + "\n…[truncated]"}
+        diff_truncated = True
+
+    payload = {
+        "kind": CANDIDATE_BUNDLE_KIND,
+        "framework_root": str(FRAMEWORK_ROOT),
+        "base_ref": bundle["base_ref"],
+        "base_sha": bundle["base_sha"],
+        "commit_sha": bundle["commit_sha"],
+        "payload_hash": bundle["payload_hash"],
+        "diff": bundle["diff"],
+        "untracked_files": bundle.get("untracked_files") or [],
+        "diff_truncated": diff_truncated,
+        "git_push": False,
+        "paper_deploy": False,
+    }
+    return payload

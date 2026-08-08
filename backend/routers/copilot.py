@@ -2,6 +2,8 @@
 
 import json
 
+import aiosqlite
+import copilot_promotion
 import copilot_research
 import copilot_store
 import database
@@ -9,6 +11,7 @@ import supervisor_client
 from auth_jwt import get_current_user
 from copilot_research import ResearchBudgetError, ResearchToolError
 from fastapi import APIRouter, Depends, HTTPException, Request
+from promotion.state_machine import PromotionError
 from pydantic import BaseModel, Field, field_validator
 from supervisor_client import SupervisorError
 
@@ -72,7 +75,10 @@ class MessageCreate(BaseModel):
 
 class ArtifactCreate(BaseModel):
     kind: str = Field(
-        pattern="^(specification|strategy_draft|experiment_result|comparison_table|optuna_summary)$"
+        pattern=(
+            "^(specification|strategy_draft|experiment_result|comparison_table|"
+            "optuna_summary|validation_report|candidate_bundle)$"
+        )
     )
     title: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=50_000)
@@ -92,7 +98,8 @@ class ExperimentRun(BaseModel):
     tool: str = Field(
         pattern=(
             "^(run_backtest|run_walk_forward|compare_strategies|optimise_params|"
-            "registry_status|propose_registry_patch|propose_strategy_patch)$"
+            "registry_status|propose_registry_patch|propose_strategy_patch|"
+            "run_validation)$"
         )
     )
     params: dict = Field(default_factory=dict)
@@ -109,6 +116,27 @@ class StrategyPatchApply(BaseModel):
 
     dry_run: bool = False
     also_registry: bool = True
+
+
+class CandidateBundleCreate(BaseModel):
+    """S6 — attach a review-only candidate bundle (no git push / paper deploy)."""
+
+    base_ref: str = Field(default="HEAD", min_length=1, max_length=120)
+    include_untracked: bool = True
+
+
+class LifecycleReject(BaseModel):
+    """S6 — reject the bound Promotion from Copilot."""
+
+    reason: str = Field(min_length=3, max_length=2_000)
+
+    @field_validator("reason")
+    @classmethod
+    def reason_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
 
 
 class ArtifactImport(BaseModel):
@@ -629,6 +657,68 @@ async def apply_strategy_patch(
     return {"result": result, "artifact": artifact, "revision": current}
 
 
+@router.post("/workspaces/{workspace_id}/bundle")
+async def create_candidate_bundle(
+    workspace_id: str,
+    user: dict = Depends(get_current_user),
+    body: CandidateBundleCreate | None = None,
+):
+    """S6 — build a candidate bundle, attach to Promotion, store artifact.
+
+    Review-only: never git push and never paper-deploy.
+    """
+    payload = body or CandidateBundleCreate()
+    owner_id = _owner(user)
+    workspace = await _owned_workspace(workspace_id, owner_id)
+    if workspace.get("lifecycle") not in {"DRAFT", "VALIDATING"}:
+        raise HTTPException(
+            status_code=409,
+            detail="Candidate bundles may be created at DRAFT or VALIDATING only",
+        )
+    promotion_id = workspace.get("promotion_id")
+    if not promotion_id:
+        raise HTTPException(status_code=409, detail="Workspace has no bound Promotion")
+    try:
+        bundle = copilot_research.build_candidate_bundle(
+            base_ref=payload.base_ref,
+            include_untracked=payload.include_untracked,
+        )
+    except ResearchToolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    promotion = copilot_promotion.load_promotion(promotion_id)
+    # Store the same review payload on the Promotion (hash matches artifact).
+    promotion = copilot_promotion.attach_candidate_bundle(promotion, bundle)
+    artifact, revision = await copilot_store.create_artifact(
+        workspace_id,
+        "candidate_bundle",
+        f"Candidate bundle {bundle.get('payload_hash', '')[:8]}",
+        json.dumps(bundle, indent=2, default=str),
+        owner_id,
+    )
+    await database.log_action(
+        "copilot_candidate_bundle_created",
+        owner_id,
+        f"copilot_workspace:{workspace_id}",
+        json.dumps(
+            {
+                "promotion_id": promotion_id,
+                "payload_hash": bundle.get("payload_hash"),
+                "artifact_id": artifact["id"],
+                "git_push": False,
+                "paper_deploy": False,
+            }
+        ),
+    )
+    return {
+        "bundle": bundle,
+        "promotion": promotion.to_dict(),
+        "artifact": artifact,
+        "revision": revision,
+        "workspace": workspace,
+    }
+
+
 @router.get("/workspaces/{workspace_id}/lifecycle")
 async def lifecycle_status(workspace_id: str, user: dict = Depends(get_current_user)):
     workspace = await _owned_workspace(workspace_id, _owner(user))
@@ -636,6 +726,71 @@ async def lifecycle_status(workspace_id: str, user: dict = Depends(get_current_u
         "workspace": workspace,
         "eligibility": await copilot_store.transition_eligibility(workspace),
         "transitions": await copilot_store.list_transitions(workspace_id),
+    }
+
+
+@router.post("/workspaces/{workspace_id}/lifecycle/reject")
+async def reject_lifecycle(
+    workspace_id: str,
+    body: LifecycleReject,
+    user: dict = Depends(get_current_user),
+):
+    """S6 — reject the bound Promotion; project REJECTED onto the workspace."""
+    owner_id = _owner(user)
+    workspace = await _owned_workspace(workspace_id, owner_id)
+    promotion_id = workspace.get("promotion_id")
+    if not promotion_id:
+        raise HTTPException(status_code=409, detail="Workspace has no bound Promotion")
+    if workspace.get("lifecycle") == "REJECTED":
+        raise HTTPException(status_code=409, detail="Workspace is already rejected")
+    try:
+        promotion = copilot_promotion.load_promotion(promotion_id)
+        updated = copilot_promotion.reject_promotion(
+            promotion,
+            approver=owner_id,
+            notes=body.reason,
+        )
+    except PromotionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    now = copilot_store._now()
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        await db.execute(
+            "UPDATE copilot_workspaces SET lifecycle=?, updated_at=? WHERE id=?",
+            ("REJECTED", now, workspace_id),
+        )
+        transition = {
+            "id": copilot_store._id("LCT"),
+            "workspace_id": workspace_id,
+            "from_lifecycle": workspace["lifecycle"],
+            "to_lifecycle": "REJECTED",
+            "actor_id": owner_id,
+            "created_at": now,
+        }
+        await db.execute(
+            "INSERT INTO copilot_lifecycle_transitions VALUES "
+            "(:id, :workspace_id, :from_lifecycle, :to_lifecycle, :actor_id, :created_at)",
+            transition,
+        )
+        await db.commit()
+
+    workspace = await _owned_workspace(workspace_id, owner_id)
+    await database.log_action(
+        "copilot_lifecycle_rejected",
+        owner_id,
+        f"copilot_workspace:{workspace_id}",
+        json.dumps(
+            {
+                "promotion_id": promotion_id,
+                "reason": body.reason,
+                "to": "REJECTED",
+            }
+        ),
+    )
+    return {
+        "workspace": workspace,
+        "promotion": updated.to_dict(),
+        "transition": transition,
     }
 
 
