@@ -9,8 +9,7 @@ import { NotificationProvider } from "./contexts/NotificationContext";
 import { NotificationContainer } from "./components/NotificationContainer";
 import TraderLayout from "./components/trader/TraderLayout";
 import MobileOpsLayout from "./mobile/MobileOpsLayout";
-import StatusPage from "./mobile/pages/StatusPage";
-import ApprovalsPage from "./mobile/pages/ApprovalsPage";
+import StatusApprovalsSplit from "./mobile/StatusApprovalsSplit";
 import ControlsPage from "./mobile/pages/ControlsPage";
 import ActivityPage from "./mobile/pages/ActivityPage";
 import AccountPage from "./mobile/pages/AccountPage";
@@ -72,8 +71,8 @@ function Router() {
       <Route path="/trader/supervision"><TraderLayout><SupervisionPage /></TraderLayout></Route>
       {/* Mobile Ops — hard /m/* boundary from TraderLayout (Platform Future brief §8.4 / §10.1) */}
       <Route path="/m"><Redirect to="/m/status" /></Route>
-      <Route path="/m/status"><MobileOpsLayout><StatusPage /></MobileOpsLayout></Route>
-      <Route path="/m/approvals"><MobileOpsLayout><ApprovalsPage /></MobileOpsLayout></Route>
+      <Route path="/m/status"><MobileOpsLayout><StatusApprovalsSplit focus="status" /></MobileOpsLayout></Route>
+      <Route path="/m/approvals"><MobileOpsLayout><StatusApprovalsSplit focus="approvals" /></MobileOpsLayout></Route>
       <Route path="/m/controls"><MobileOpsLayout><ControlsPage /></MobileOpsLayout></Route>
       <Route path="/m/activity"><MobileOpsLayout><ActivityPage /></MobileOpsLayout></Route>
       <Route path="/m/account"><MobileOpsLayout><AccountPage /></MobileOpsLayout></Route>
