@@ -11,7 +11,19 @@ export interface CopilotWorkspace {
 }
 
 export type CopilotLifecycle = 'IDEA' | 'SPECIFICATION' | 'DRAFT' | 'VALIDATING' | 'CANDIDATE' | 'APPROVED_FOR_PAPER' | 'PAPER_OBSERVATION' | 'ELIGIBLE_FOR_LIVE';
-export type CopilotArtifactKind = 'specification' | 'strategy_draft';
+export type CopilotArtifactKind =
+  | 'specification'
+  | 'strategy_draft'
+  | 'experiment_result'
+  | 'comparison_table'
+  | 'optuna_summary';
+
+export type CopilotResearchTool =
+  | 'run_backtest'
+  | 'run_walk_forward'
+  | 'compare_strategies'
+  | 'optimise_params'
+  | 'registry_status';
 
 export interface CopilotArtifact { id: string; workspace_id: string; kind: CopilotArtifactKind; title: string; current_revision: number; created_at: string; updated_at: string; }
 export interface CopilotArtifactRevision { id: string; artifact_id: string; revision: number; content: string; content_hash: string; created_by: string; created_at: string; }
@@ -64,6 +76,19 @@ export const copilotService = {
     ),
   listArtifacts: (workspaceId: string) => api.get<{ artifacts: CopilotArtifact[] }>(`/api/copilot/workspaces/${workspaceId}/artifacts`),
   createArtifact: (workspaceId: string, kind: CopilotArtifactKind, title: string, content: string) => api.post<{ artifact: CopilotArtifact; revision: CopilotArtifactRevision }>(`/api/copilot/workspaces/${workspaceId}/artifacts`, { kind, title, content }),
+  runExperiment: (workspaceId: string, tool: CopilotResearchTool, params: Record<string, unknown> = {}) =>
+    api.post<{
+      artifact: CopilotArtifact;
+      revision: CopilotArtifactRevision;
+      summary: string;
+      metrics: Record<string, unknown>;
+      tool: CopilotResearchTool;
+    }>(`/api/copilot/workspaces/${workspaceId}/experiments`, { tool, params }),
+  importArtifact: (workspaceId: string, kind: Exclude<CopilotArtifactKind, 'specification' | 'strategy_draft'>, title: string, content: string) =>
+    api.post<{ artifact: CopilotArtifact; revision: CopilotArtifactRevision }>(
+      `/api/copilot/workspaces/${workspaceId}/artifacts/import`,
+      { kind, title, content },
+    ),
   listRevisions: (artifactId: string) => api.get<{ revisions: CopilotArtifactRevision[] }>(`/api/copilot/artifacts/${artifactId}/revisions`),
   createRevision: (artifactId: string, content: string) => api.post<{ revision: CopilotArtifactRevision }>(`/api/copilot/artifacts/${artifactId}/revisions`, { content }),
   listApprovals: (artifactId: string) => api.get<{ approvals: CopilotApproval[] }>(`/api/copilot/artifacts/${artifactId}/approvals`),

@@ -1,11 +1,13 @@
-"""Authenticated Strategy Copilot workspace API (O1 + S1 Supervisor chat)."""
+"""Authenticated Strategy Copilot workspace API (O1 + S1 chat + S2 research)."""
 
 import json
 
+import copilot_research
 import copilot_store
 import database
 import supervisor_client
 from auth_jwt import get_current_user
+from copilot_research import ResearchBudgetError, ResearchToolError
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
 from supervisor_client import SupervisorError
@@ -51,7 +53,9 @@ class MessageCreate(BaseModel):
 
 
 class ArtifactCreate(BaseModel):
-    kind: str = Field(pattern="^(specification|strategy_draft)$")
+    kind: str = Field(
+        pattern="^(specification|strategy_draft|experiment_result|comparison_table|optuna_summary)$"
+    )
     title: str = Field(min_length=1, max_length=120)
     content: str = Field(min_length=1, max_length=50_000)
 
@@ -61,6 +65,42 @@ class ArtifactCreate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("value must not be blank")
+        return value
+
+
+class ExperimentRun(BaseModel):
+    """Human-triggered research tool (same implementation Supervisor may call)."""
+
+    tool: str = Field(
+        pattern="^(run_backtest|run_walk_forward|compare_strategies|optimise_params|registry_status)$"
+    )
+    params: dict = Field(default_factory=dict)
+
+
+class ArtifactImport(BaseModel):
+    """Import a CLI/Optuna/notebook JSON summary into the workspace."""
+
+    kind: str = Field(pattern="^(experiment_result|comparison_table|optuna_summary)$")
+    title: str = Field(min_length=1, max_length=120)
+    content: str = Field(min_length=2, max_length=50_000)
+
+    @field_validator("title", "content")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+    @field_validator("content")
+    @classmethod
+    def content_must_be_json_object(cls, value: str) -> str:
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("content must be valid JSON") from exc
+        if not isinstance(parsed, dict):
+            raise ValueError("content must be a JSON object")
         return value
 
 
@@ -236,6 +276,78 @@ async def create_message(
         ),
     )
     return {"message": message, "acknowledgement": acknowledgement}
+
+
+@router.get("/workspaces/{workspace_id}/research/tools")
+async def list_research_tools(workspace_id: str, user: dict = Depends(get_current_user)):
+    await _owned_workspace(workspace_id, _owner(user))
+    return {"tools": copilot_research.tool_schemas()}
+
+
+@router.post("/workspaces/{workspace_id}/experiments", status_code=201)
+async def run_experiment(
+    workspace_id: str,
+    body: ExperimentRun,
+    user: dict = Depends(get_current_user),
+):
+    """Run an allowlisted research tool and persist the result as an artifact."""
+    owner_id = _owner(user)
+    await _owned_workspace(workspace_id, owner_id)
+    try:
+        result = copilot_research.execute_tool(body.tool, body.params)
+    except ResearchBudgetError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ResearchToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    artifact, revision = await copilot_store.create_artifact(
+        workspace_id,
+        result.artifact_kind,
+        result.title[:120],
+        result.content,
+        owner_id,
+    )
+    await database.log_action(
+        "copilot_experiment_ran",
+        owner_id,
+        f"copilot_workspace:{workspace_id}",
+        json.dumps(
+            {
+                "tool": result.tool,
+                "artifact_id": artifact["id"],
+                "revision_id": revision["id"],
+                "actor": "human",
+            }
+        ),
+    )
+    return {
+        "artifact": artifact,
+        "revision": revision,
+        "summary": result.summary,
+        "metrics": result.metrics,
+        "tool": result.tool,
+    }
+
+
+@router.post("/workspaces/{workspace_id}/artifacts/import", status_code=201)
+async def import_research_artifact(
+    workspace_id: str,
+    body: ArtifactImport,
+    user: dict = Depends(get_current_user),
+):
+    """Import an external research JSON summary (Optuna CLI, notebook, etc.)."""
+    owner_id = _owner(user)
+    await _owned_workspace(workspace_id, owner_id)
+    artifact, revision = await copilot_store.create_artifact(
+        workspace_id, body.kind, body.title, body.content, owner_id
+    )
+    await database.log_action(
+        "copilot_artifact_imported",
+        owner_id,
+        f"copilot_artifact:{artifact['id']}",
+        json.dumps({"kind": body.kind, "revision_id": revision["id"]}),
+    )
+    return {"artifact": artifact, "revision": revision}
 
 
 @router.get("/workspaces/{workspace_id}/artifacts")

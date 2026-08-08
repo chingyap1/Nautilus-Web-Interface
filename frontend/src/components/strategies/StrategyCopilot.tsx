@@ -9,6 +9,7 @@ import {
   type CopilotArtifactKind,
   type CopilotArtifactRevision,
   type CopilotEligibility,
+  type CopilotResearchTool,
   type CopilotWorkspace,
 } from '@/services/copilotService';
 
@@ -36,6 +37,10 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
+  const [experimentTool, setExperimentTool] = useState<CopilotResearchTool>('run_backtest');
+  const [experimentStrategy, setExperimentStrategy] = useState('ma_cross');
+  const [experimentSummary, setExperimentSummary] = useState<string | null>(null);
+  const [importJson, setImportJson] = useState('');
   const selectionVersion = useRef(0);
 
   useEffect(() => {
@@ -195,6 +200,61 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not approve artifact'); } finally { setBusy(false); }
   }
 
+  async function runExperiment(event: FormEvent) {
+    event.preventDefault();
+    if (!workspace) return;
+    setBusy(true);
+    setError(null);
+    setExperimentSummary(null);
+    try {
+      const params: Record<string, unknown> = {
+        pair: 'XBTUSD',
+        interval: experimentTool === 'optimise_params' ? '1h' : '1d',
+        limit: 200,
+      };
+      if (experimentTool === 'compare_strategies') {
+        params.strategies = [experimentStrategy, 'rsi'];
+      } else if (experimentTool !== 'registry_status') {
+        params.strategy = experimentStrategy;
+      }
+      if (experimentTool === 'optimise_params') {
+        params.n_trials = 5;
+      }
+      const result = await copilotService.runExperiment(workspace.id, experimentTool, params);
+      const nextArtifacts = [result.artifact, ...artifacts];
+      setArtifacts(nextArtifacts);
+      await refreshReviewState(nextArtifacts);
+      setExperimentSummary(result.summary);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Experiment failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importResearchArtifact(event: FormEvent) {
+    event.preventDefault();
+    if (!workspace || !importJson.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await copilotService.importArtifact(
+        workspace.id,
+        'optuna_summary',
+        'Imported Optuna summary',
+        importJson.trim(),
+      );
+      const nextArtifacts = [created.artifact, ...artifacts];
+      setArtifacts(nextArtifacts);
+      await refreshReviewState(nextArtifacts);
+      setImportJson('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Import failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function advanceLifecycle() {
     if (!workspace) return;
     setBusy(true); setError(null);
@@ -212,9 +272,9 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
           <div className="flex gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-cyan-400 text-slate-950"><Sparkles /></span>
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Phase O1 · durable workspace</p>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Strategy discovery · S1/S2</p>
               <h2 className="mt-1 text-2xl font-bold text-white">Build with Copilot</h2>
-              <p className="mt-2 max-w-2xl text-sm text-slate-400">Capture strategy ideas and link research to an existing strategy. Messages are saved for a future Supervisor; no model, agent command, or trading action runs in this slice.</p>
+              <p className="mt-2 max-w-2xl text-sm text-slate-400">Chat with the Supervisor, run bounded backtests and comparisons, and review metric artifacts. No paper commands or trading actions from this workspace.</p>
             </div>
           </div>
           <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300"><ShieldCheck className="h-4 w-4" /> Advisory only</span>
@@ -253,10 +313,32 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
           {workspace && !loadingWorkspace && <section className="border-b border-white/8 bg-white/[0.02] p-4 sm:p-5" aria-label="Artifact review workflow">
             <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">O1b review workflow</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
             {eligibility && !eligibility.eligible && <p className="mt-2 text-xs text-amber-300">{eligibility.reason}</p>}
+            <form onSubmit={runExperiment} className="mt-4 grid gap-2 sm:grid-cols-3" aria-label="Run experiment">
+              <select value={experimentTool} onChange={(event) => setExperimentTool(event.target.value as CopilotResearchTool)} aria-label="Experiment tool" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white">
+                <option value="run_backtest">Backtest</option>
+                <option value="run_walk_forward">Walk-forward</option>
+                <option value="compare_strategies">Compare</option>
+                <option value="optimise_params">Optuna (bounded)</option>
+                <option value="registry_status">Registry status</option>
+              </select>
+              <select value={experimentStrategy} onChange={(event) => setExperimentStrategy(event.target.value)} aria-label="Strategy" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" disabled={experimentTool === 'registry_status'}>
+                <option value="ma_cross">ma_cross</option>
+                <option value="rsi">rsi</option>
+                <option value="breakout">breakout</option>
+                <option value="bb_reversion">bb_reversion</option>
+              </select>
+              <button type="submit" disabled={busy} className="rounded-lg bg-cyan-400/90 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40">Run experiment</button>
+            </form>
+            {experimentSummary && <p className="mt-2 text-xs text-emerald-200">{experimentSummary}</p>}
+            <form onSubmit={importResearchArtifact} className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" aria-label="Import research JSON">
+              <textarea value={importJson} onChange={(event) => setImportJson(event.target.value)} aria-label="Import JSON" placeholder="Paste Optuna/CLI JSON summary…" rows={2} className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" />
+              <button type="submit" disabled={busy || !importJson.trim()} className="rounded-lg border border-white/15 px-3 py-2 text-sm text-slate-200 disabled:opacity-40">Import</button>
+            </form>
             <form onSubmit={createArtifact} className="mt-4 grid gap-2 sm:grid-cols-2"><select value={artifactKind} onChange={(event) => setArtifactKind(event.target.value as CopilotArtifactKind)} aria-label="Artifact kind" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white"><option value="specification">Specification</option><option value="strategy_draft">Strategy draft</option></select><input value={artifactTitle} onChange={(event) => setArtifactTitle(event.target.value)} aria-label="Artifact title" maxLength={120} className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><textarea value={artifactContent} onChange={(event) => setArtifactContent(event.target.value)} aria-label="Artifact content" placeholder="Document the proposal for human review…" rows={2} maxLength={50000} className="sm:col-span-2 rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" /><button disabled={busy || !artifactContent.trim()} className="rounded-lg border border-cyan-400/35 px-3 py-2 text-sm font-semibold text-cyan-200 disabled:opacity-40"><FileText className="mr-1 inline h-4 w-4" /> Save immutable revision</button></form>
             <div className="mt-3 space-y-2">{artifacts.map((artifact) => {
               const review = reviewState[artifact.id];
-              return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span><div className="flex gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button></div></div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</p>}</div>;
+              const isResearch = artifact.kind === 'experiment_result' || artifact.kind === 'comparison_table' || artifact.kind === 'optuna_summary';
+              return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')} · rev {artifact.current_revision}</span></span>{!isResearch && <div className="flex gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button></div>}</div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code>{!isResearch && <> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</>}</p>}</div>;
             })}</div>
             {artifacts.length > 0 && <input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} aria-label="Approval reason" maxLength={2000} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-white" />}
           </section>}
