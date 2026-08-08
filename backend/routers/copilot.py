@@ -90,9 +90,18 @@ class ExperimentRun(BaseModel):
     """Human-triggered research tool (same implementation Supervisor may call)."""
 
     tool: str = Field(
-        pattern="^(run_backtest|run_walk_forward|compare_strategies|optimise_params|registry_status)$"
+        pattern=(
+            "^(run_backtest|run_walk_forward|compare_strategies|optimise_params|"
+            "registry_status|propose_registry_patch)$"
+        )
     )
     params: dict = Field(default_factory=dict)
+
+
+class RegistryPatchApply(BaseModel):
+    """S4 — apply an approved registry_patch strategy_draft (no git push)."""
+
+    dry_run: bool = False
 
 
 class ArtifactImport(BaseModel):
@@ -488,6 +497,66 @@ async def decide_revision(
         json.dumps({"decision": body.decision, "approval_id": approval["id"]}),
     )
     return {"approval": approval}
+
+
+@router.post("/artifacts/{artifact_id}/apply-registry-patch")
+async def apply_registry_patch(
+    artifact_id: str,
+    user: dict = Depends(get_current_user),
+    body: RegistryPatchApply | None = None,
+):
+    """S4 — apply an approved registry_patch strategy_draft to FRAMEWORK_ROOT.
+
+    Fail-closed without a current-revision approval. Never git push/merge.
+    """
+    payload = body or RegistryPatchApply()
+    owner_id = _owner(user)
+    artifact = await _owned_artifact(artifact_id, owner_id)
+    if artifact.get("kind") != "strategy_draft":
+        raise HTTPException(
+            status_code=422,
+            detail="Only strategy_draft artifacts can apply a registry patch",
+        )
+    revisions = await copilot_store.list_revisions(artifact["id"])
+    current = next(
+        (r for r in revisions if r["revision"] == artifact["current_revision"]),
+        None,
+    )
+    if not current:
+        raise HTTPException(status_code=409, detail="Current artifact revision not found")
+    approvals = await copilot_store.list_approvals(artifact["id"])
+    latest = next(
+        (a for a in approvals if a["artifact_revision_id"] == current["id"]),
+        None,
+    )
+    if not latest or latest.get("decision") != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Approve the current registry patch revision before applying",
+        )
+    try:
+        result = copilot_research.apply_approved_registry_patch(
+            current["content"],
+            dry_run=payload.dry_run,
+        )
+    except ResearchToolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await database.log_action(
+        "copilot_registry_patch_applied",
+        owner_id,
+        f"copilot_artifact:{artifact_id}",
+        json.dumps(
+            {
+                "revision_id": current["id"],
+                "dry_run": payload.dry_run,
+                "applied": result.get("applied"),
+                "strategies": result.get("strategies"),
+                "git_push": False,
+            }
+        ),
+    )
+    return {"result": result, "artifact": artifact, "revision": current}
 
 
 @router.get("/workspaces/{workspace_id}/lifecycle")

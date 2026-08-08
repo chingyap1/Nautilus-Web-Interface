@@ -49,6 +49,8 @@ ARTIFACT_KIND_BY_TOOL = {
     "compare_strategies": "comparison_table",
     "optimise_params": "optuna_summary",
     "registry_status": "experiment_result",
+    # S4 — propose-only; apply is a separate human-gated endpoint.
+    "propose_registry_patch": "strategy_draft",
 }
 
 ALLOWED_TOOLS = frozenset(ARTIFACT_KIND_BY_TOOL)
@@ -57,6 +59,7 @@ RESEARCH_ARTIFACT_KINDS = frozenset(
     {"experiment_result", "comparison_table", "optuna_summary"}
 )
 ALL_ARTIFACT_KINDS = RESEARCH_ARTIFACT_KINDS | {"specification", "strategy_draft"}
+REGISTRY_PATCH_KIND = "registry_patch"
 
 BarLoader = Callable[[str, str, int], pd.DataFrame]
 _bar_loader: BarLoader | None = None
@@ -188,6 +191,29 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "parameters": {"type": "object", "properties": {}},
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "propose_registry_patch",
+                "description": (
+                    "Propose three-registry sync patches for review (S4). "
+                    "Does not write files; operator must approve then apply."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "strategies": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Optional strategy module names. "
+                                "Omit to plan all missing registrations."
+                            ),
+                        }
+                    },
+                },
+            },
+        },
     ]
 
 
@@ -241,6 +267,8 @@ def _dispatch(tool: str, params: dict[str, Any]) -> ResearchResult:
         return _optimise_params(params)
     if tool == "registry_status":
         return _registry_status()
+    if tool == "propose_registry_patch":
+        return _propose_registry_patch(params)
     raise ResearchToolError(f"unhandled tool: {tool}")
 
 
@@ -609,3 +637,82 @@ def _registry_status() -> ResearchResult:
         summary=summary,
         metrics=metrics,
     )
+
+
+def _propose_registry_patch(params: dict[str, Any]) -> ResearchResult:
+    from engineering.registry import propose_registry_patch
+
+    raw = params.get("strategies")
+    names: list[str] | None = None
+    if raw is not None:
+        if not isinstance(raw, list):
+            raise ResearchToolError("strategies must be a list of names")
+        names = [str(item) for item in raw]
+        if len(names) > MAX_COMPARE_STRATEGIES:
+            raise ResearchBudgetError(
+                f"strategies exceeds budget (max {MAX_COMPARE_STRATEGIES})"
+            )
+    plan = propose_registry_patch(FRAMEWORK_ROOT, strategy_names=names)
+    metrics = {
+        "framework_root": plan["framework_root"],
+        "strategies": plan["strategies"],
+        "missing": plan["missing"],
+        "in_sync": plan["in_sync"],
+        "apply_requires_human": True,
+        "git_push": False,
+    }
+    if plan["strategies"]:
+        summary = (
+            f"Proposed registry patch for {', '.join(plan['strategies'])} "
+            "(approve artifact, then Apply — no git push)"
+        )
+    else:
+        summary = "No registry patch needed — three registries already in sync"
+    return ResearchResult(
+        tool="propose_registry_patch",
+        artifact_kind="strategy_draft",
+        title="Registry patch proposal",
+        content=_json_content(plan),
+        summary=summary,
+        metrics=metrics,
+    )
+
+
+def parse_registry_patch_content(content: str) -> dict[str, Any]:
+    """Validate a strategy_draft revision body as an S4 registry patch plan."""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ResearchToolError("registry patch content must be JSON") from exc
+    if not isinstance(payload, dict) or payload.get("kind") != REGISTRY_PATCH_KIND:
+        raise ResearchToolError(
+            f"artifact is not a {REGISTRY_PATCH_KIND} plan (got kind={payload.get('kind')!r})"
+            if isinstance(payload, dict)
+            else "artifact is not a registry_patch plan"
+        )
+    strategies = payload.get("strategies")
+    if strategies is not None and not isinstance(strategies, list):
+        raise ResearchToolError("registry patch strategies must be a list")
+    return payload
+
+
+def apply_approved_registry_patch(
+    content: str,
+    *,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Apply an approved registry_patch plan to FRAMEWORK_ROOT (no git push)."""
+    from engineering.registry import RegistryError, apply_registry_patch
+
+    plan = parse_registry_patch_content(content)
+    names = [str(n) for n in (plan.get("strategies") or [])]
+    try:
+        result = apply_registry_patch(
+            FRAMEWORK_ROOT,
+            strategy_names=names or None,
+            dry_run=dry_run,
+        )
+    except RegistryError as exc:
+        raise ResearchToolError(str(exc)) from exc
+    result["framework_root"] = str(FRAMEWORK_ROOT)
+    return result

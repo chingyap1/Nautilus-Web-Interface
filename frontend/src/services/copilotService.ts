@@ -24,7 +24,8 @@ export type CopilotResearchTool =
   | 'run_walk_forward'
   | 'compare_strategies'
   | 'optimise_params'
-  | 'registry_status';
+  | 'registry_status'
+  | 'propose_registry_patch';
 
 export interface CopilotArtifact { id: string; workspace_id: string; kind: CopilotArtifactKind; title: string; current_revision: number; created_at: string; updated_at: string; }
 export interface CopilotArtifactRevision { id: string; artifact_id: string; revision: number; content: string; content_hash: string; created_by: string; created_at: string; }
@@ -122,6 +123,20 @@ export const copilotService = {
   createRevision: (artifactId: string, content: string) => api.post<{ revision: CopilotArtifactRevision }>(`/api/copilot/artifacts/${artifactId}/revisions`, { content }),
   listApprovals: (artifactId: string) => api.get<{ approvals: CopilotApproval[] }>(`/api/copilot/artifacts/${artifactId}/approvals`),
   decideRevision: (artifactId: string, revisionId: string, decision: CopilotApproval['decision'], reason: string) => api.post<{ approval: CopilotApproval }>(`/api/copilot/artifacts/${artifactId}/revisions/${revisionId}/approval`, { decision, reason }),
+  applyRegistryPatch: (artifactId: string, dryRun = false) =>
+    api.post<{
+      result: {
+        applied: string[];
+        skipped: string[];
+        strategies: string[];
+        dry_run: boolean;
+        remaining_missing?: Record<string, string[]>;
+        git_push: boolean;
+        message?: string;
+      };
+      artifact: CopilotArtifact;
+      revision: CopilotArtifactRevision;
+    }>(`/api/copilot/artifacts/${artifactId}/apply-registry-patch`, { dry_run: dryRun }),
   lifecycle: (workspaceId: string) => api.get<{ workspace: CopilotWorkspace; eligibility: CopilotEligibility; transitions: CopilotTransition[] }>(`/api/copilot/workspaces/${workspaceId}/lifecycle`),
   advanceLifecycle: (workspaceId: string) => api.post<{ workspace: CopilotWorkspace; transition: CopilotTransition }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/advance`, {}),
 };
