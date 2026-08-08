@@ -1,12 +1,20 @@
-"""Durable, owner-scoped persistence for Strategy Copilot O1 workspaces."""
+"""Durable, owner-scoped persistence for Strategy Copilot O1 workspaces.
+
+Lifecycle authority is ``promotion.Promotion`` (D13). The ``lifecycle`` column
+is a cached projection of ``Promotion.state`` for list/display; advances go
+through ``copilot_promotion`` → ``promotion.state_machine.advance``.
+"""
 
 import hashlib
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
+import copilot_promotion
 import database
+from promotion.state_machine import PromotionError
 
 LIFECYCLES = (
     "IDEA",
@@ -18,6 +26,7 @@ LIFECYCLES = (
     "PAPER_OBSERVATION",
     "ELIGIBLE_FOR_LIVE",
 )
+# Kept for display/docs only — do not grow as a second FSM (D13).
 TRANSITIONS = {
     "IDEA": ("SPECIFICATION", "specification"),
     "SPECIFICATION": ("DRAFT", "strategy_draft"),
@@ -52,33 +61,103 @@ async def get_workspace(workspace_id: str, owner_id: str) -> dict[str, Any] | No
             (workspace_id, owner_id),
         ) as cursor:
             row = await cursor.fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+    return await ensure_promotion_binding(dict(row))
 
 
 async def create_workspace(
     owner_id: str,
     title: str,
     strategy_id: str | None = None,
+    *,
+    description: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Create a workspace bound to a new ``Promotion`` at IDEA (D13)."""
     now = _now()
+    meta = {"workspace_title": title, "owner_id": owner_id, **(metadata or {})}
+    if strategy_id:
+        meta["strategy_id"] = strategy_id
+    promotion = copilot_promotion.create_promotion(
+        strategy_name=strategy_id or meta.get("framework_strategy") or "unlinked",
+        description=description or title,
+        metadata=meta,
+    )
     workspace = {
         "id": _id("CWS"),
         "owner_id": owner_id,
         "title": title,
         "strategy_id": strategy_id,
-        "lifecycle": "IDEA",
+        "lifecycle": copilot_promotion.project_lifecycle(promotion),
+        "promotion_id": promotion.id,
         "created_at": now,
         "updated_at": now,
     }
     async with aiosqlite.connect(database.DB_PATH) as db:
         await db.execute(
             """INSERT INTO copilot_workspaces
-               (id, owner_id, title, strategy_id, lifecycle, created_at, updated_at)
-               VALUES (:id, :owner_id, :title, :strategy_id, :lifecycle, :created_at, :updated_at)""",
+               (id, owner_id, title, strategy_id, lifecycle, promotion_id, created_at, updated_at)
+               VALUES (:id, :owner_id, :title, :strategy_id, :lifecycle, :promotion_id,
+                       :created_at, :updated_at)""",
             workspace,
         )
         await db.commit()
     return workspace
+
+
+async def ensure_promotion_binding(workspace: dict[str, Any]) -> dict[str, Any]:
+    """Lazily bind a Promotion for pre-S3 rows missing ``promotion_id``."""
+    if workspace.get("promotion_id"):
+        return await _sync_lifecycle_projection(workspace)
+    promotion = copilot_promotion.create_promotion(
+        strategy_name=workspace.get("strategy_id") or "unlinked",
+        description=workspace.get("title") or "legacy workspace",
+        metadata={
+            "workspace_id": workspace["id"],
+            "owner_id": workspace.get("owner_id"),
+            "migrated_from_lifecycle": workspace.get("lifecycle"),
+            "source": "legacy_bind",
+        },
+    )
+    # Preserve projected lifecycle if the row was already advanced before binding.
+    desired = workspace.get("lifecycle") or "IDEA"
+    if desired != promotion.state.value and desired in LIFECYCLES:
+        # Do not silently invent approvals — reset projection to IDEA authority.
+        desired = promotion.state.value
+    now = _now()
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        await db.execute(
+            """UPDATE copilot_workspaces
+               SET promotion_id = ?, lifecycle = ?, updated_at = ?
+               WHERE id = ? AND (promotion_id IS NULL OR promotion_id = '')""",
+            (promotion.id, desired, now, workspace["id"]),
+        )
+        await db.commit()
+    workspace = {**workspace, "promotion_id": promotion.id, "lifecycle": desired, "updated_at": now}
+    return workspace
+
+
+async def _sync_lifecycle_projection(workspace: dict[str, Any]) -> dict[str, Any]:
+    """Refresh cached lifecycle from the bound Promotion when they diverge."""
+    promotion_id = workspace.get("promotion_id")
+    if not promotion_id:
+        return workspace
+    try:
+        promotion = copilot_promotion.load_promotion(promotion_id)
+    except Exception:
+        return workspace
+    projected = copilot_promotion.project_lifecycle(promotion)
+    if projected == workspace.get("lifecycle"):
+        return workspace
+    now = _now()
+    async with aiosqlite.connect(database.DB_PATH) as db:
+        await db.execute(
+            "UPDATE copilot_workspaces SET lifecycle = ?, updated_at = ? WHERE id = ?",
+            (projected, now, workspace["id"]),
+        )
+        await db.commit()
+    return {**workspace, "lifecycle": projected, "updated_at": now}
 
 
 async def list_conversations(workspace_id: str) -> list[dict[str, Any]]:
@@ -235,6 +314,7 @@ def build_supervisor_messages(
         "paper deploy occurred.\n\n"
         f"Workspace title: {workspace.get('title', '')}\n"
         f"Lifecycle: {workspace.get('lifecycle', 'IDEA')}\n"
+        f"Promotion id: {workspace.get('promotion_id') or 'none'}\n"
         f"Linked strategy id: {strategy_id}\n"
         f"Recent artifacts:\n{artifacts_block}"
     )
@@ -398,59 +478,91 @@ async def list_approvals(artifact_id: str) -> list[dict[str, Any]]:
 
 
 async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
-    rule = TRANSITIONS.get(workspace["lifecycle"])
-    if not rule:
+    workspace = await ensure_promotion_binding(workspace)
+    promotion_id = workspace.get("promotion_id")
+    if not promotion_id:
         return {
             "eligible": False,
             "target": None,
-            "reason": "This lifecycle transition is not available in O1b.",
+            "required_artifact_kind": None,
+            "reason": "Workspace is not bound to a Promotion (D13).",
+            "promotion_id": None,
+            "promotion_state": None,
         }
-    target, kind = rule
+    promotion = copilot_promotion.load_promotion(promotion_id)
+    rule = copilot_promotion.TRANSITIONS_UI.get(promotion.state)
+    kind = rule[1] if rule else None
     async with aiosqlite.connect(database.DB_PATH) as db:
-        approved = await _has_current_approval(db, workspace["id"], kind)
-    return {
-        "eligible": approved,
-        "target": target,
-        "required_artifact_kind": kind,
-        "reason": "" if approved else f"Approve the current {kind} artifact revision first.",
-    }
+        approved = bool(kind and await _has_current_approval(db, workspace["id"], kind))
+    return copilot_promotion.transition_eligibility(
+        promotion, artifact_approved=approved
+    )
 
 
 async def advance_lifecycle(workspace: dict[str, Any], owner_id: str) -> dict[str, Any] | None:
+    """Advance via ``promotion.state_machine`` then project state onto the workspace."""
+    workspace = await ensure_promotion_binding(workspace)
     now = _now()
     async with aiosqlite.connect(database.DB_PATH) as db:
         try:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
-                "SELECT lifecycle FROM copilot_workspaces WHERE id = ?",
+                "SELECT lifecycle, promotion_id FROM copilot_workspaces WHERE id = ?",
                 (workspace["id"],),
             ) as cursor:
                 row = await cursor.fetchone()
-            if not row or row[0] != workspace["lifecycle"]:
+            if not row or row[0] != workspace["lifecycle"] or not row[1]:
                 await db.rollback()
                 return None
-            rule = TRANSITIONS.get(row[0])
-            if not rule or not await _has_current_approval(db, workspace["id"], rule[1]):
+            lifecycle, promotion_id = row[0], row[1]
+            promotion = copilot_promotion.load_promotion(promotion_id)
+            if promotion.state.value != lifecycle:
+                # Repair projection under lock, then refuse this advance attempt.
+                await db.execute(
+                    "UPDATE copilot_workspaces SET lifecycle=?, updated_at=? WHERE id=?",
+                    (promotion.state.value, now, workspace["id"]),
+                )
+                await db.commit()
+                return None
+            rule = copilot_promotion.TRANSITIONS_UI.get(promotion.state)
+            if not rule:
                 await db.rollback()
                 return None
-            target = rule[0]
+            target, kind = rule
+            if not await _has_current_approval(db, workspace["id"], kind):
+                await db.rollback()
+                return None
+            payload_hash = await _current_artifact_hash(db, workspace["id"], kind)
+            try:
+                updated_promotion = copilot_promotion.advance_promotion(
+                    promotion,
+                    target=target,
+                    approver=owner_id,
+                    payload_hash=payload_hash,
+                    notes=f"Advanced from Copilot workspace {workspace['id']}",
+                )
+            except PromotionError:
+                await db.rollback()
+                return None
+            to_lifecycle = updated_promotion.state.value
             transition = {
                 "id": _id("LCT"),
                 "workspace_id": workspace["id"],
-                "from_lifecycle": row[0],
-                "to_lifecycle": target,
+                "from_lifecycle": lifecycle,
+                "to_lifecycle": to_lifecycle,
                 "actor_id": owner_id,
                 "created_at": now,
             }
             updated = await db.execute(
                 "UPDATE copilot_workspaces SET lifecycle=?, updated_at=? WHERE id=? AND lifecycle=?",
-                (target, now, workspace["id"], row[0]),
+                (to_lifecycle, now, workspace["id"], lifecycle),
             )
             if updated.rowcount != 1:
                 await db.rollback()
                 return None
             await db.execute(
-                "INSERT INTO copilot_lifecycle_transitions VALUES (:id, :workspace_id, :from_lifecycle, :to_lifecycle, :actor_id, :created_at)",
+                "INSERT INTO copilot_lifecycle_transitions VALUES "
+                "(:id, :workspace_id, :from_lifecycle, :to_lifecycle, :actor_id, :created_at)",
                 transition,
             )
             await db.commit()
@@ -458,6 +570,63 @@ async def advance_lifecycle(workspace: dict[str, Any], owner_id: str) -> dict[st
             await db.rollback()
             raise
     return transition
+
+
+async def create_from_supervision(
+    owner_id: str,
+    *,
+    pair: str,
+    reason: str,
+    strategy: str | None = None,
+    recommendation_kind: str = "experiment",
+    parameters: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Spawn a Copilot workspace from a supervision EXPERIMENT recommendation."""
+    params = parameters or {}
+    title = f"Supervision experiment · {pair}"
+    workspace = await create_workspace(
+        owner_id,
+        title,
+        strategy_id=None,
+        description=reason,
+        metadata={
+            "source": "supervision",
+            "pair": pair,
+            "recommendation_kind": recommendation_kind,
+            "framework_strategy": strategy,
+            "parameters": params,
+        },
+    )
+    conversation = await create_conversation(workspace["id"], "Supervision ingress")
+    seed = (
+        f"Opened from supervision for {pair} "
+        f"(kind={recommendation_kind}"
+        f"{f', strategy={strategy}' if strategy else ''}).\n\n"
+        f"{reason}"
+    )
+    if params:
+        seed += f"\n\nSuggested parameters:\n{json.dumps(params, indent=2)}"
+    await append_message(
+        conversation["id"], role="system", content=seed, status="saved"
+    )
+    content = (
+        f"# Experiment brief ({pair})\n\n{reason}\n\n"
+        f"Framework strategy: {strategy or 'unspecified'}\n"
+        f"Parameters: {json.dumps(params)}\n"
+    )
+    artifact, revision = await create_artifact(
+        workspace["id"],
+        "specification",
+        f"Supervision brief · {pair}",
+        content,
+        owner_id,
+    )
+    return {
+        "workspace": workspace,
+        "conversation": conversation,
+        "artifact": artifact,
+        "revision": revision,
+    }
 
 
 async def _has_current_approval(db: aiosqlite.Connection, workspace_id: str, kind: str) -> bool:
@@ -472,6 +641,22 @@ async def _has_current_approval(db: aiosqlite.Connection, workspace_id: str, kin
     ) as cursor:
         decision = await cursor.fetchone()
     return decision is not None and decision[0] == "approved"
+
+
+async def _current_artifact_hash(
+    db: aiosqlite.Connection, workspace_id: str, kind: str
+) -> str | None:
+    """Return content_hash of the current revision for an artifact kind."""
+    async with db.execute(
+        """SELECT r.content_hash FROM copilot_artifacts a
+           JOIN copilot_artifact_revisions r
+             ON r.artifact_id = a.id AND r.revision = a.current_revision
+           WHERE a.workspace_id = ? AND a.kind = ?
+           ORDER BY a.updated_at DESC LIMIT 1""",
+        (workspace_id, kind),
+    ) as cursor:
+        row = await cursor.fetchone()
+    return row[0] if row else None
 
 
 async def list_transitions(workspace_id: str) -> list[dict[str, Any]]:

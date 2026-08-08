@@ -44,7 +44,24 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const selectionVersion = useRef(0);
 
   useEffect(() => {
-    void refreshWorkspaces();
+    void (async () => {
+      const params = new URLSearchParams(window.location.search);
+      const requestedId = params.get('workspace');
+      try {
+        const data = await copilotService.listWorkspaces();
+        setWorkspaces(data.workspaces);
+        if (requestedId) {
+          const match = data.workspaces.find((item) => item.id === requestedId);
+          if (match) {
+            await selectWorkspace(match);
+            return;
+          }
+        }
+        if (data.workspaces.length) await selectWorkspace(data.workspaces[0]);
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Could not load Copilot workspaces');
+      }
+    })();
   }, []);
 
   async function refreshWorkspaces() {
@@ -297,7 +314,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
             {workspaces.map((item) => (
               <button key={item.id} type="button" onClick={() => void selectWorkspace(item)} disabled={loadingWorkspace || busy} className={`w-full rounded-xl border p-3 text-left transition disabled:cursor-wait disabled:opacity-60 ${workspace?.id === item.id ? 'border-cyan-400/35 bg-cyan-400/10' : 'border-white/8 bg-white/[0.02] hover:bg-white/[0.05]'}`}>
                 <span className="block truncate text-sm font-semibold text-white">{item.title}</span>
-                <span className="mt-1 flex items-center gap-1.5 text-xs text-slate-500"><Link2 className="h-3 w-3" /> {item.strategy_id ? 'Strategy linked' : 'Unlinked idea'} · {item.lifecycle}</span>
+                <span className="mt-1 flex items-center gap-1.5 text-xs text-slate-500"><Link2 className="h-3 w-3" /> {item.strategy_id ? 'Strategy linked' : 'Unlinked idea'} · {item.lifecycle}{item.promotion_id ? ` · ${item.promotion_id.slice(0, 12)}…` : ''}</span>
               </button>
             ))}
             {!workspaces.length && <p className="px-2 py-5 text-center text-sm text-slate-500">Create your first idea workspace.</p>}
@@ -311,7 +328,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
 
         <div className="flex min-h-[430px] flex-col">
           {workspace && !loadingWorkspace && <section className="border-b border-white/8 bg-white/[0.02] p-4 sm:p-5" aria-label="Artifact review workflow">
-            <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">O1b review workflow</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
+            <div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-wider text-cyan-300">D13 promotion lifecycle</p><p className="mt-1 text-sm text-slate-400">Lifecycle: <strong className="text-white">{workspace.lifecycle}</strong>{eligibility?.target ? ` → ${eligibility.target}` : ''}{workspace.promotion_id ? <span className="ml-2 font-mono text-xs text-slate-500">{workspace.promotion_id}</span> : null}</p></div>{eligibility && <button type="button" onClick={() => void advanceLifecycle()} disabled={!eligibility.eligible || busy} className="inline-flex items-center gap-2 rounded-lg bg-emerald-400 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40"><CheckCircle2 className="h-4 w-4" /> Advance</button>}</div>
             {eligibility && !eligibility.eligible && <p className="mt-2 text-xs text-amber-300">{eligibility.reason}</p>}
             <form onSubmit={runExperiment} className="mt-4 grid gap-2 sm:grid-cols-3" aria-label="Run experiment">
               <select value={experimentTool} onChange={(event) => setExperimentTool(event.target.value as CopilotResearchTool)} aria-label="Experiment tool" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white">

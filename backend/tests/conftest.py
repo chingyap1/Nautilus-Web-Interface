@@ -12,6 +12,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
+# Framework root (promotion/, strategies/, …) for D13 Copilot binding in tests.
+_framework = Path(__file__).resolve().parents[4]
+if (_framework / "promotion" / "state_machine.py").is_file():
+    sys.path.insert(0, str(_framework))
 
 
 @pytest.fixture

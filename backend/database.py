@@ -170,6 +170,7 @@ async def init_db() -> None:
                 title        TEXT NOT NULL,
                 strategy_id  TEXT,
                 lifecycle    TEXT NOT NULL DEFAULT 'IDEA',
+                promotion_id TEXT,
                 created_at   TEXT NOT NULL,
                 updated_at   TEXT NOT NULL
             );
@@ -249,6 +250,8 @@ async def init_db() -> None:
             "ALTER TABLE users ADD COLUMN totp_secret TEXT",
             "ALTER TABLE users ADD COLUMN two_factor_enabled INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE users ADD COLUMN principal_type TEXT NOT NULL DEFAULT 'human'",
+            # D13 / S3 — workspace binds a Promotion as lifecycle authority
+            "ALTER TABLE copilot_workspaces ADD COLUMN promotion_id TEXT",
         ]:
             try:
                 await db.execute(migration)

@@ -6,6 +6,7 @@ export interface CopilotWorkspace {
   title: string;
   strategy_id: string | null;
   lifecycle: CopilotLifecycle;
+  promotion_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -29,7 +30,22 @@ export interface CopilotArtifact { id: string; workspace_id: string; kind: Copil
 export interface CopilotArtifactRevision { id: string; artifact_id: string; revision: number; content: string; content_hash: string; created_by: string; created_at: string; }
 export interface CopilotApproval { id: string; artifact_revision_id: string; decision: 'approved' | 'rejected'; reason: string; decided_by: string; decided_at: string; }
 export interface CopilotTransition { id: string; workspace_id: string; from_lifecycle: CopilotLifecycle; to_lifecycle: CopilotLifecycle; actor_id: string; created_at: string; }
-export interface CopilotEligibility { eligible: boolean; target: CopilotLifecycle | null; required_artifact_kind?: CopilotArtifactKind; reason: string; }
+export interface CopilotEligibility {
+  eligible: boolean;
+  target: CopilotLifecycle | null;
+  required_artifact_kind?: CopilotArtifactKind | null;
+  reason: string;
+  promotion_id?: string | null;
+  promotion_state?: CopilotLifecycle | null;
+}
+
+export interface SupervisionIngressRequest {
+  pair: string;
+  reason: string;
+  strategy?: string | null;
+  recommendation_kind?: string;
+  parameters?: Record<string, unknown>;
+}
 
 export interface CopilotConversation {
   id: string;
@@ -55,6 +71,19 @@ export const copilotService = {
     api.post<{ workspace: CopilotWorkspace }>('/api/copilot/workspaces', {
       title,
       strategy_id: strategyId || null,
+    }),
+  createFromSupervision: (body: SupervisionIngressRequest) =>
+    api.post<{
+      workspace: CopilotWorkspace;
+      conversation: CopilotConversation;
+      artifact: CopilotArtifact;
+      revision: CopilotArtifactRevision;
+    }>('/api/copilot/workspaces/from-supervision', {
+      pair: body.pair,
+      reason: body.reason,
+      strategy: body.strategy ?? null,
+      recommendation_kind: body.recommendation_kind ?? 'experiment',
+      parameters: body.parameters ?? {},
     }),
   listConversations: (workspaceId: string) =>
     api.get<{ conversations: CopilotConversation[] }>(

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw, Radar } from 'lucide-react';
 
 import nautilusService, { type AgentSnapshot } from '@/services/nautilusService';
+import { copilotService } from '@/services/copilotService';
 import { supervisionService, type SupervisionResult, type InterlockState, type InterlockActionResponse, type SupervisionProposal } from '@/services/supervisionService';
 
 import InterlockBanner from '@/components/supervision/InterlockBanner';
@@ -18,6 +19,7 @@ export default function SupervisionPage() {
   const [inspecting, setInspecting] = useState(false);
   const [inspectError, setInspectError] = useState<string | null>(null);
   const [inspectResult, setInspectResult] = useState<SupervisionResult | null>(null);
+  const [openingCopilot, setOpeningCopilot] = useState(false);
 
   // Interlock state — polled every 5s
   const [interlockState, setInterlockState] = useState<InterlockState | null>(null);
@@ -103,6 +105,27 @@ export default function SupervisionPage() {
       setInspecting(false);
     }
   }, [selectedPair, loadProposals]);
+
+  // --- S3: EXPERIMENT → Copilot workspace (Promotion-bound, no dispatch) ---
+  const handleOpenInCopilot = useCallback(async () => {
+    const recommendation = inspectResult?.recommendation;
+    if (!recommendation || recommendation.kind !== 'experiment' || !selectedPair) return;
+    setOpeningCopilot(true);
+    setInspectError(null);
+    try {
+      const created = await copilotService.createFromSupervision({
+        pair: selectedPair,
+        reason: recommendation.reason,
+        strategy: inspectResult?.health?.strategy ?? null,
+        recommendation_kind: recommendation.kind,
+        parameters: recommendation.parameters ?? {},
+      });
+      window.location.href = `/trader/strategies?workspace=${encodeURIComponent(created.workspace.id)}`;
+    } catch (err) {
+      setInspectError(err instanceof Error ? err.message : 'Could not open Copilot workspace');
+      setOpeningCopilot(false);
+    }
+  }, [inspectResult, selectedPair]);
 
   // --- Interlock actions ---
   const handleEngage = useCallback(async () => {
@@ -218,6 +241,8 @@ export default function SupervisionPage() {
           <RecommendationCard
             recommendation={inspectResult?.recommendation ?? null}
             proposal={inspectResult?.proposal ?? null}
+            onOpenInCopilot={handleOpenInCopilot}
+            openingCopilot={openingCopilot}
           />
         </div>
 

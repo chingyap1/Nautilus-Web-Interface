@@ -1,4 +1,4 @@
-"""Authenticated Strategy Copilot workspace API (O1 + S1 chat + S2 research)."""
+"""Authenticated Strategy Copilot workspace API (O1 + S1–S3)."""
 
 import json
 
@@ -25,6 +25,24 @@ class WorkspaceCreate(BaseModel):
         value = value.strip()
         if not value:
             raise ValueError("title must not be blank")
+        return value
+
+
+class WorkspaceFromSupervision(BaseModel):
+    """S3 — open a Copilot workspace from a supervision EXPERIMENT recommendation."""
+
+    pair: str = Field(min_length=1, max_length=32)
+    reason: str = Field(min_length=1, max_length=2_000)
+    strategy: str | None = Field(default=None, max_length=120)
+    recommendation_kind: str = Field(default="experiment", max_length=32)
+    parameters: dict = Field(default_factory=dict)
+
+    @field_validator("pair", "reason")
+    @classmethod
+    def text_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
         return value
 
 
@@ -167,9 +185,49 @@ async def create_workspace(body: WorkspaceCreate, user: dict = Depends(get_curre
         "copilot_workspace_created",
         user_id=owner_id,
         resource=f"copilot_workspace:{workspace['id']}",
-        details=json.dumps({"strategy_id": body.strategy_id}),
+        details=json.dumps(
+            {
+                "strategy_id": body.strategy_id,
+                "promotion_id": workspace.get("promotion_id"),
+            }
+        ),
     )
     return {"workspace": workspace}
+
+
+@router.post("/workspaces/from-supervision", status_code=201)
+async def create_workspace_from_supervision(
+    body: WorkspaceFromSupervision,
+    user: dict = Depends(get_current_user),
+):
+    """S3 / D13 — supervision EXPERIMENT ingress into a bound Copilot workspace."""
+    if body.recommendation_kind != "experiment":
+        raise HTTPException(
+            status_code=422,
+            detail="Only experiment recommendations can open a Copilot workspace",
+        )
+    owner_id = _owner(user)
+    created = await copilot_store.create_from_supervision(
+        owner_id,
+        pair=body.pair.upper(),
+        reason=body.reason,
+        strategy=body.strategy,
+        recommendation_kind=body.recommendation_kind,
+        parameters=body.parameters,
+    )
+    await database.log_action(
+        "copilot_workspace_from_supervision",
+        user_id=owner_id,
+        resource=f"copilot_workspace:{created['workspace']['id']}",
+        details=json.dumps(
+            {
+                "pair": body.pair.upper(),
+                "promotion_id": created["workspace"].get("promotion_id"),
+                "recommendation_kind": body.recommendation_kind,
+            }
+        ),
+    )
+    return created
 
 
 @router.get("/workspaces/{workspace_id}")
@@ -449,12 +507,21 @@ async def advance_lifecycle(workspace_id: str, user: dict = Depends(get_current_
     transition = await copilot_store.advance_lifecycle(workspace, owner_id)
     if not transition:
         eligibility = await copilot_store.transition_eligibility(workspace)
-        raise HTTPException(status_code=409, detail=eligibility["reason"])
+        raise HTTPException(
+            status_code=409,
+            detail=eligibility.get("reason") or "Lifecycle advance refused",
+        )
     updated = await _owned_workspace(workspace_id, owner_id)
     await database.log_action(
         "copilot_lifecycle_advanced",
         owner_id,
         f"copilot_workspace:{workspace_id}",
-        json.dumps({"transition_id": transition["id"], "to": transition["to_lifecycle"]}),
+        json.dumps(
+            {
+                "transition_id": transition["id"],
+                "to": transition["to_lifecycle"],
+                "promotion_id": updated.get("promotion_id"),
+            }
+        ),
     )
     return {"workspace": updated, "transition": transition}

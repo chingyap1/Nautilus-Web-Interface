@@ -38,6 +38,8 @@ def test_workspace_round_trip_uses_authenticated_owner(client):
     assert workspace["owner_id"] == "admin"
     assert workspace["lifecycle"] == "IDEA"
     assert workspace["strategy_id"] is None
+    assert workspace["promotion_id"]
+    assert workspace["promotion_id"].startswith("PROM-")
 
     listed = client.get("/api/copilot/workspaces")
     assert listed.status_code == 200

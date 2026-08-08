@@ -1,4 +1,4 @@
-import { Info, AlertTriangle, ShieldAlert, Zap, RotateCcw, CircleStop } from 'lucide-react';
+import { Info, AlertTriangle, ShieldAlert, Zap, RotateCcw, CircleStop, Sparkles } from 'lucide-react';
 import type { Recommendation, CommandProposal } from '@/services/supervisionService';
 
 const KIND_CONFIG: Record<
@@ -26,9 +26,13 @@ const PROPOSAL_KINDS = new Set(['restart', 'flatten', 'halt']);
 export default function RecommendationCard({
   recommendation,
   proposal,
+  onOpenInCopilot,
+  openingCopilot = false,
 }: {
   recommendation: Recommendation | null;
   proposal: CommandProposal | null;
+  onOpenInCopilot?: () => void;
+  openingCopilot?: boolean;
 }) {
   if (!recommendation) {
     return (
@@ -48,6 +52,7 @@ export default function RecommendationCard({
   const config = KIND_CONFIG[recommendation.kind] ?? KIND_CONFIG.none;
   const KindIcon = config.icon;
   const createsProposal = PROPOSAL_KINDS.has(recommendation.kind);
+  const canOpenCopilot = recommendation.kind === 'experiment' && Boolean(onOpenInCopilot);
 
   return (
     <div className="rounded-2xl border border-white/8 bg-[#111c2e] p-5">
@@ -81,6 +86,23 @@ export default function RecommendationCard({
         }).format(new Date(recommendation.proposed_at))}
       </div>
 
+      {canOpenCopilot && (
+        <div className="mt-4">
+          <button
+            type="button"
+            onClick={onOpenInCopilot}
+            disabled={openingCopilot}
+            className="inline-flex items-center gap-2 rounded-lg border border-violet-400/30 bg-violet-400/10 px-3 py-2 text-sm font-medium text-violet-200 transition-colors hover:bg-violet-400/20 disabled:opacity-40"
+          >
+            <Sparkles className={`h-4 w-4 ${openingCopilot ? 'animate-pulse' : ''}`} />
+            {openingCopilot ? 'Opening Copilot…' : 'Open in Copilot'}
+          </button>
+          <p className="mt-2 text-xs text-slate-500">
+            Creates a Promotion-bound workspace (D13) with this experiment brief — no paper command is dispatched.
+          </p>
+        </div>
+      )}
+
       {createsProposal && proposal && (
         <div className="mt-4 rounded-xl border border-amber-500/20 bg-amber-500/[0.07] p-4">
           <div className="flex items-start gap-3">
@@ -95,8 +117,7 @@ export default function RecommendationCard({
                 Target: <span className="font-mono text-slate-300">{proposal.target_agent_id}</span>
               </div>
               <div className="mt-2 text-xs text-slate-500">
-                Approval and dispatch happen outside this UI (CLI or direct Python) until Phase 2 lands.
-                No action buttons are provided here — by design.
+                Approval and dispatch remain on the existing B5/B6 path. This card does not dispatch.
               </div>
             </div>
           </div>
@@ -110,7 +131,7 @@ export default function RecommendationCard({
         </div>
       )}
 
-      {!createsProposal && (
+      {!createsProposal && !canOpenCopilot && (
         <div className="mt-4 rounded-xl border border-white/7 bg-white/[0.025] p-3 text-xs text-slate-500">
           Advisory only — no command proposal created. The human operator decides whether to take action.
         </div>
