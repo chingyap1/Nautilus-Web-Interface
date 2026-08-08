@@ -152,6 +152,28 @@ class TestRiskLimits:
         asyncio.run(database.update_risk_limits({"max_daily_loss": 10000}))
         assert asyncio.run(database.risk_limits_explicitly_set()) is True
 
+    def test_corrupt_risk_limits_json_falls_back_to_defaults(self, db):
+        asyncio.run(
+            database._execute(
+                "UPDATE kv_store SET value=? WHERE namespace='risk' AND key='limits'",
+                ("not-json",),
+                commit=True,
+            )
+        )
+        limits = asyncio.run(database.get_risk_limits())
+        assert limits == database.DEFAULT_RISK_LIMITS
+
+    def test_missing_risk_limits_row_returns_defaults(self, db):
+        asyncio.run(
+            database._execute(
+                "DELETE FROM kv_store WHERE namespace='risk' AND key='limits'",
+                (),
+                commit=True,
+            )
+        )
+        limits = asyncio.run(database.get_risk_limits())
+        assert limits == database.DEFAULT_RISK_LIMITS
+
 
 # ---------------------------------------------------------------------------
 # Settings
@@ -171,6 +193,17 @@ class TestSettings:
     def test_get_settings_raw(self, db):
         settings = asyncio.run(database.get_settings_raw())
         assert "general" in settings
+
+    def test_missing_settings_rows_return_defaults(self, db):
+        asyncio.run(
+            database._execute(
+                "DELETE FROM kv_store WHERE namespace='settings'",
+                (),
+                commit=True,
+            )
+        )
+        assert asyncio.run(database.get_settings()) == database.DEFAULT_SETTINGS
+        assert asyncio.run(database.get_settings_raw()) == database.DEFAULT_SETTINGS
 
     def test_update_settings_new_section(self, db):
         updated = asyncio.run(database.update_settings({"custom": {"key": "value"}}))
@@ -542,6 +575,52 @@ class TestSeedDefaults:
         assert admin is not None
         assert admin["role"] == "admin"
         assert admin["principal_type"] == "human"
+
+    def test_seed_admin_user_noop_when_present(self, db):
+        asyncio.run(database.seed_admin_user("admin"))
+        admin = asyncio.run(database.get_user("admin"))
+        assert admin is not None
+
+    def test_seed_admin_user_race_swallows_value_error(self, db, monkeypatch):
+        async def _missing(_username: str):
+            return None
+
+        async def _exists(*_a, **_k):
+            raise ValueError("already exists")
+
+        monkeypatch.setattr(database, "get_user", _missing)
+        monkeypatch.setattr(database, "create_user", _exists)
+        asyncio.run(database.seed_admin_user("admin"))
+
+    def test_execute_helper_commits(self, db):
+        asyncio.run(
+            database._execute(
+                "INSERT INTO kv_store(namespace, key, value) VALUES (?,?,?)",
+                ("test", "k", "1"),
+                commit=True,
+            )
+        )
+        # Re-run without commit path for coverage of commit=False.
+        asyncio.run(
+            database._execute(
+                "UPDATE kv_store SET value=? WHERE namespace=? AND key=?",
+                ("2", "test", "k"),
+                commit=False,
+            )
+        )
+
+    def test_trigger_alert_notification_failure_is_swallowed(self, db, monkeypatch):
+        alert = asyncio.run(
+            database.create_alert("BTC/USD", "above", 100.0, message="hi")
+        )
+
+        async def _boom(_alert):
+            raise RuntimeError("notify failed")
+
+        import notifications
+
+        monkeypatch.setattr(notifications, "notify_alert_triggered", _boom)
+        assert asyncio.run(database.trigger_alert(alert["id"])) is True
 
 
 # ---------------------------------------------------------------------------

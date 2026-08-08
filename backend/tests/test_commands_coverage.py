@@ -44,7 +44,7 @@ class TestFullLifecycle:
             command_type=CommandType.SUBMIT_ORDER,
             instrument="BTC/USD.KRAKEN",
             side=CommandSide.BUY,
-            order_type=CommandType.MARKET,
+            order_type=OrderType.MARKET,
             quantity=0.5,
             strategy_id="str-lifecycle",
         )
@@ -253,6 +253,32 @@ class TestValidateCatalogDrift:
         assert "start_strategy" in values
         assert "stop_strategy" in values
         assert "kill_switch" in values
+
+    def test_validate_catalog_drift_raises_on_mismatch(self, monkeypatch):
+        """ValueError when CommandType and catalog diverge (lines 67–74)."""
+        from dataclasses import replace
+
+        from mcp_gateway import catalog as catalog_mod
+
+        real_list = catalog_mod.list_commands
+
+        def _drifted(*, enabled_only: bool = True):
+            cmds = list(real_list(enabled_only=enabled_only))
+            # Drop one catalog entry so NWI has a name the catalog lacks.
+            return [c for c in cmds if c.name != "kill_switch"]
+
+        monkeypatch.setattr(catalog_mod, "list_commands", _drifted)
+        with pytest.raises(ValueError, match="CommandType but not catalog"):
+            commands.validate_catalog_drift()
+
+        def _extra(*, enabled_only: bool = True):
+            cmds = list(real_list(enabled_only=enabled_only))
+            cmds.append(replace(cmds[0], name="not_a_real_command"))
+            return cmds
+
+        monkeypatch.setattr(catalog_mod, "list_commands", _extra)
+        with pytest.raises(ValueError, match="catalog but not CommandType"):
+            commands.validate_catalog_drift()
 
 
 class TestUpdateCommandStatusEdgeCases:
