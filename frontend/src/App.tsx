@@ -39,6 +39,13 @@ import SupervisionPage from "./pages/SupervisionPage";
 import UsersPage from "./pages/UsersPage";
 import LoginPage from "./pages/LoginPage";
 import { API_CONFIG } from "./config";
+import {
+  consumeReturnPath,
+  currentPathForReturn,
+  isTokenExpired,
+  markSessionEnded,
+  stashReturnPath,
+} from "./mobile/session";
 
 function Router() {
   useEffect(() => {
@@ -114,16 +121,10 @@ function App() {
       setAuthenticated(false);
       return;
     }
-    // Decode JWT payload to check expiry (no library needed for exp check)
     try {
-      const parts = token.split('.');
-      if (parts.length !== 3) throw new Error('Malformed token');
-      // JWT uses base64url encoding; atob needs standard base64
-      const base64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-      const payload = JSON.parse(atob(base64));
-      const exp = typeof payload.exp === 'number' ? payload.exp : null;
-      if (exp !== null && exp * 1000 < Date.now()) {
-        // Token expired — clear and show login
+      if (isTokenExpired()) {
+        stashReturnPath(currentPathForReturn());
+        markSessionEnded('expired');
         localStorage.removeItem('nautilus_token');
         localStorage.removeItem('nautilus_role');
         setAuthenticated(false);
@@ -141,6 +142,11 @@ function App() {
     localStorage.setItem('nautilus_token', token);
     localStorage.setItem('nautilus_role', role);
     setAuthenticated(true);
+    // P5: restore Mobile Ops deep link after re-auth (§7.4)
+    const returnPath = consumeReturnPath();
+    if (returnPath && typeof window !== 'undefined') {
+      window.history.replaceState(null, '', returnPath);
+    }
   };
 
   const handleLogout = async () => {
@@ -156,6 +162,7 @@ function App() {
         // Ignore network errors — local logout still proceeds
       }
     }
+    markSessionEnded('signed_out');
     localStorage.removeItem('nautilus_token');
     localStorage.removeItem('nautilus_role');
     setAuthenticated(false);

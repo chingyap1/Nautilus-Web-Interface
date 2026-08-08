@@ -4,6 +4,7 @@
  * and structured error objects.
  */
 import { API_CONFIG } from '../config';
+import { markSessionEnded, stashReturnPath } from '../mobile/session';
 
 export class ApiError extends Error {
   constructor(
@@ -26,6 +27,10 @@ function getAuthHeaders(): Record<string, string> {
 
 /** Clear session and dispatch event so App can transition to LoginPage without hard reload */
 function handleUnauthorized(): void {
+  // P5: preserve Mobile Ops deep link + login reason across soft logout
+  const path = `${window.location.pathname}${window.location.search}`;
+  stashReturnPath(path);
+  markSessionEnded('unauthorized');
   localStorage.removeItem('nautilus_token');
   localStorage.removeItem('nautilus_role');
   // Dispatch a custom event — App.tsx listens for this to trigger re-render
