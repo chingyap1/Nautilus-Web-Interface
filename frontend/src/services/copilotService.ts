@@ -25,7 +25,8 @@ export type CopilotResearchTool =
   | 'compare_strategies'
   | 'optimise_params'
   | 'registry_status'
-  | 'propose_registry_patch';
+  | 'propose_registry_patch'
+  | 'propose_strategy_patch';
 
 export interface CopilotArtifact { id: string; workspace_id: string; kind: CopilotArtifactKind; title: string; current_revision: number; created_at: string; updated_at: string; }
 export interface CopilotArtifactRevision { id: string; artifact_id: string; revision: number; content: string; content_hash: string; created_by: string; created_at: string; }
@@ -137,6 +138,25 @@ export const copilotService = {
       artifact: CopilotArtifact;
       revision: CopilotArtifactRevision;
     }>(`/api/copilot/artifacts/${artifactId}/apply-registry-patch`, { dry_run: dryRun }),
+  applyStrategyPatch: (artifactId: string, dryRun = false, alsoRegistry = true) =>
+    api.post<{
+      result: {
+        kind: string;
+        strategy_key: string;
+        written: string[];
+        skipped: string[];
+        dry_run: boolean;
+        also_registry: boolean;
+        registry?: Record<string, unknown> | null;
+        git_push: boolean;
+        framework_root?: string;
+      };
+      artifact: CopilotArtifact;
+      revision: CopilotArtifactRevision;
+    }>(`/api/copilot/artifacts/${artifactId}/apply-strategy-patch`, {
+      dry_run: dryRun,
+      also_registry: alsoRegistry,
+    }),
   lifecycle: (workspaceId: string) => api.get<{ workspace: CopilotWorkspace; eligibility: CopilotEligibility; transitions: CopilotTransition[] }>(`/api/copilot/workspaces/${workspaceId}/lifecycle`),
   advanceLifecycle: (workspaceId: string) => api.post<{ workspace: CopilotWorkspace; transition: CopilotTransition }>(`/api/copilot/workspaces/${workspaceId}/lifecycle/advance`, {}),
 };

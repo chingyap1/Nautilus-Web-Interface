@@ -39,6 +39,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
   const [loadingWorkspace, setLoadingWorkspace] = useState(false);
   const [experimentTool, setExperimentTool] = useState<CopilotResearchTool>('run_backtest');
   const [experimentStrategy, setExperimentStrategy] = useState('ma_cross');
+  const [draftStrategyKey, setDraftStrategyKey] = useState('sma_momentum');
   const [experimentSummary, setExperimentSummary] = useState<string | null>(null);
   const [importJson, setImportJson] = useState('');
   const selectionVersion = useRef(0);
@@ -231,6 +232,10 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       };
       if (experimentTool === 'compare_strategies') {
         params.strategies = [experimentStrategy, 'rsi'];
+      } else if (experimentTool === 'propose_strategy_patch') {
+        params.strategy_key = draftStrategyKey.trim();
+        params.template = 'risk_long_only';
+        params.include_test = true;
       } else if (
         experimentTool !== 'registry_status' &&
         experimentTool !== 'propose_registry_patch'
@@ -285,16 +290,24 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not advance lifecycle'); } finally { setBusy(false); }
   }
 
-  function isRegistryPatchDraft(artifact: CopilotArtifact): boolean {
-    if (artifact.kind !== 'strategy_draft') return false;
+  function draftKind(artifact: CopilotArtifact): string | null {
+    if (artifact.kind !== 'strategy_draft') return null;
     const content = reviewState[artifact.id]?.revision?.content;
-    if (!content) return false;
+    if (!content) return null;
     try {
       const parsed = JSON.parse(content) as { kind?: string };
-      return parsed.kind === 'registry_patch';
+      return parsed.kind ?? null;
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  function isRegistryPatchDraft(artifact: CopilotArtifact): boolean {
+    return draftKind(artifact) === 'registry_patch';
+  }
+
+  function isStrategyCodePatchDraft(artifact: CopilotArtifact): boolean {
+    return draftKind(artifact) === 'strategy_code_patch';
   }
 
   async function applyRegistryPatch(artifact: CopilotArtifact) {
@@ -314,6 +327,23 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
     }
   }
 
+  async function applyStrategyPatch(artifact: CopilotArtifact) {
+    setBusy(true);
+    setError(null);
+    setExperimentSummary(null);
+    try {
+      const response = await copilotService.applyStrategyPatch(artifact.id, false, true);
+      const files = response.result.written.join(', ') || 'no files';
+      setExperimentSummary(
+        `Applied strategy code patch for ${response.result.strategy_key}: ${files}. Registry sync included. No git push.`,
+      );
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not apply strategy code patch');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section className="mb-8 overflow-hidden rounded-2xl border border-cyan-400/20 bg-[var(--trader-panel)] shadow-2xl shadow-cyan-950/20">
       <div className="border-b border-white/8 bg-gradient-to-r from-cyan-400/10 via-transparent to-blue-500/10 p-5 sm:p-7">
@@ -321,9 +351,9 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
           <div className="flex gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl bg-cyan-400 text-slate-950"><Sparkles /></span>
             <div>
-              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Strategy discovery · S1–S4</p>
+              <p className="text-xs font-bold uppercase tracking-[0.22em] text-cyan-300">Strategy discovery · S1–S5</p>
               <h2 className="mt-1 text-2xl font-bold text-white">Build with Copilot</h2>
-              <p className="mt-2 max-w-2xl text-sm text-slate-400">Chat with the Supervisor, run bounded experiments, and apply approved three-registry sync patches. No paper commands, trading actions, or git push from this workspace.</p>
+              <p className="mt-2 max-w-2xl text-sm text-slate-400">Chat with the Supervisor, run bounded experiments, and apply approved registry or template strategy-code patches. No paper commands, trading actions, or git push from this workspace.</p>
             </div>
           </div>
           <span className="inline-flex items-center gap-2 rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1.5 text-xs font-semibold text-emerald-300"><ShieldCheck className="h-4 w-4" /> Advisory only</span>
@@ -370,14 +400,25 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
                 <option value="optimise_params">Optuna (bounded)</option>
                 <option value="registry_status">Registry status</option>
                 <option value="propose_registry_patch">Propose registry patch</option>
+                <option value="propose_strategy_patch">Propose strategy code</option>
               </select>
-              <select value={experimentStrategy} onChange={(event) => setExperimentStrategy(event.target.value)} aria-label="Strategy" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" disabled={experimentTool === 'registry_status' || experimentTool === 'propose_registry_patch'}>
-                <option value="ma_cross">ma_cross</option>
-                <option value="rsi">rsi</option>
-                <option value="breakout">breakout</option>
-                <option value="bb_reversion">bb_reversion</option>
-              </select>
-              <button type="submit" disabled={busy} className="rounded-lg bg-cyan-400/90 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40">Run experiment</button>
+              {experimentTool === 'propose_strategy_patch' ? (
+                <input
+                  value={draftStrategyKey}
+                  onChange={(event) => setDraftStrategyKey(event.target.value)}
+                  aria-label="New strategy key"
+                  placeholder="sma_momentum"
+                  className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white"
+                />
+              ) : (
+                <select value={experimentStrategy} onChange={(event) => setExperimentStrategy(event.target.value)} aria-label="Strategy" className="rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-sm text-white" disabled={experimentTool === 'registry_status' || experimentTool === 'propose_registry_patch'}>
+                  <option value="ma_cross">ma_cross</option>
+                  <option value="rsi">rsi</option>
+                  <option value="breakout">breakout</option>
+                  <option value="bb_reversion">bb_reversion</option>
+                </select>
+              )}
+              <button type="submit" disabled={busy || (experimentTool === 'propose_strategy_patch' && !draftStrategyKey.trim())} className="rounded-lg bg-cyan-400/90 px-3 py-2 text-sm font-bold text-slate-950 disabled:opacity-40">Run experiment</button>
             </form>
             {experimentSummary && <p className="mt-2 text-xs text-emerald-200">{experimentSummary}</p>}
             <form onSubmit={importResearchArtifact} className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto]" aria-label="Import research JSON">
@@ -389,8 +430,11 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
               const review = reviewState[artifact.id];
               const isResearch = artifact.kind === 'experiment_result' || artifact.kind === 'comparison_table' || artifact.kind === 'optuna_summary';
               const registryPatch = isRegistryPatchDraft(artifact);
-              const canApply = registryPatch && review?.decision?.decision === 'approved';
-              return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')}{registryPatch ? ' · registry patch' : ''} · rev {artifact.current_revision}</span></span>{!isResearch && <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button>{registryPatch && <button type="button" onClick={() => void applyRegistryPatch(artifact)} disabled={busy || !canApply} className="rounded-md border border-violet-400/30 bg-violet-400/10 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-400/20 disabled:opacity-40">Apply patch</button>}</div>}</div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code>{!isResearch && <> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</>}{registryPatch && !canApply ? ' · approve before apply (no git push)' : null}</p>}</div>;
+              const strategyCodePatch = isStrategyCodePatchDraft(artifact);
+              const canApplyRegistry = registryPatch && review?.decision?.decision === 'approved';
+              const canApplyStrategy = strategyCodePatch && review?.decision?.decision === 'approved';
+              const draftLabel = registryPatch ? ' · registry patch' : strategyCodePatch ? ' · strategy code' : '';
+              return <div key={artifact.id} className="rounded-lg border border-white/8 px-3 py-2 text-sm"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-slate-200">{artifact.title} <span className="text-slate-500">· {artifact.kind.replaceAll('_', ' ')}{draftLabel} · rev {artifact.current_revision}</span></span>{!isResearch && <div className="flex flex-wrap gap-2"><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'approved')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-emerald-400/15 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-400/25 disabled:opacity-40">Approve</button><button type="button" onClick={() => void decideCurrentArtifact(artifact, 'rejected')} disabled={busy || approvalReason.trim().length < 3 || !review} className="rounded-md bg-rose-400/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-400/20 disabled:opacity-40">Reject</button>{registryPatch && <button type="button" onClick={() => void applyRegistryPatch(artifact)} disabled={busy || !canApplyRegistry} className="rounded-md border border-violet-400/30 bg-violet-400/10 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-400/20 disabled:opacity-40">Apply patch</button>}{strategyCodePatch && <button type="button" onClick={() => void applyStrategyPatch(artifact)} disabled={busy || !canApplyStrategy} className="rounded-md border border-violet-400/30 bg-violet-400/10 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-400/20 disabled:opacity-40">Apply code</button>}</div>}</div>{review && <p className="mt-1 text-xs text-slate-500">Current hash: <code>{review.revision.content_hash.slice(0, 12)}…</code>{!isResearch && <> · latest decision: <strong className={review.decision?.decision === 'approved' ? 'text-emerald-300' : review.decision?.decision === 'rejected' ? 'text-rose-300' : 'text-amber-300'}>{review.decision?.decision ?? 'pending'}</strong>{review.decision ? ` — ${review.decision.reason}` : ''}</>}{(registryPatch && !canApplyRegistry) || (strategyCodePatch && !canApplyStrategy) ? ' · approve before apply (no git push)' : null}</p>}</div>;
             })}</div>
             {artifacts.length > 0 && <input value={approvalReason} onChange={(event) => setApprovalReason(event.target.value)} aria-label="Approval reason" maxLength={2000} className="mt-2 w-full rounded-lg border border-white/10 bg-slate-950/40 px-3 py-2 text-xs text-white" />}
           </section>}

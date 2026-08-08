@@ -51,6 +51,8 @@ ARTIFACT_KIND_BY_TOOL = {
     "registry_status": "experiment_result",
     # S4 — propose-only; apply is a separate human-gated endpoint.
     "propose_registry_patch": "strategy_draft",
+    # S5 / fuller O3 — allowlisted strategy-code draft; apply is human-gated.
+    "propose_strategy_patch": "strategy_draft",
 }
 
 ALLOWED_TOOLS = frozenset(ARTIFACT_KIND_BY_TOOL)
@@ -60,6 +62,7 @@ RESEARCH_ARTIFACT_KINDS = frozenset(
 )
 ALL_ARTIFACT_KINDS = RESEARCH_ARTIFACT_KINDS | {"specification", "strategy_draft"}
 REGISTRY_PATCH_KIND = "registry_patch"
+STRATEGY_CODE_PATCH_KIND = "strategy_code_patch"
 
 BarLoader = Callable[[str, str, int], pd.DataFrame]
 _bar_loader: BarLoader | None = None
@@ -214,6 +217,36 @@ def tool_schemas() -> list[dict[str, Any]]:
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "propose_strategy_patch",
+                "description": (
+                    "Propose a constrained strategy-code draft from an "
+                    "allowlisted template (S5). Does not write files; "
+                    "operator must approve then apply. Never free-form edits."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "strategy_key": {
+                            "type": "string",
+                            "description": "New snake_case module name, e.g. sma_momentum",
+                        },
+                        "template": {
+                            "type": "string",
+                            "default": "risk_long_only",
+                            "description": "Allowlisted template id",
+                        },
+                        "include_test": {
+                            "type": "boolean",
+                            "default": True,
+                        },
+                    },
+                    "required": ["strategy_key"],
+                },
+            },
+        },
     ]
 
 
@@ -269,6 +302,8 @@ def _dispatch(tool: str, params: dict[str, Any]) -> ResearchResult:
         return _registry_status()
     if tool == "propose_registry_patch":
         return _propose_registry_patch(params)
+    if tool == "propose_strategy_patch":
+        return _propose_strategy_patch(params)
     raise ResearchToolError(f"unhandled tool: {tool}")
 
 
@@ -713,6 +748,94 @@ def apply_approved_registry_patch(
             dry_run=dry_run,
         )
     except RegistryError as exc:
+        raise ResearchToolError(str(exc)) from exc
+    result["framework_root"] = str(FRAMEWORK_ROOT)
+    return result
+
+
+def _propose_strategy_patch(params: dict[str, Any]) -> ResearchResult:
+    from engineering.patch import PatchError, propose_strategy_patch
+
+    raw_key = params.get("strategy_key")
+    if raw_key is None or not str(raw_key).strip():
+        raise ResearchToolError("strategy_key is required")
+    template = str(params.get("template") or "risk_long_only")
+    include_test = params.get("include_test", True)
+    if not isinstance(include_test, bool):
+        raise ResearchToolError("include_test must be a boolean")
+    try:
+        plan = propose_strategy_patch(
+            FRAMEWORK_ROOT,
+            str(raw_key),
+            template=template,
+            include_test=include_test,
+        )
+    except PatchError as exc:
+        raise ResearchToolError(str(exc)) from exc
+
+    metrics = {
+        "framework_root": plan["framework_root"],
+        "strategy_key": plan["strategy_key"],
+        "template": plan["template"],
+        "files": sorted(plan["files"].keys()),
+        "writable_apply_root": plan["writable_apply_root"],
+        "apply_requires_human": True,
+        "git_push": False,
+    }
+    summary = (
+        f"Proposed {plan['template']} strategy code patch for "
+        f"{plan['strategy_key']} ({len(plan['files'])} files + registry). "
+        "Approve artifact, then Apply — no git push."
+    )
+    return ResearchResult(
+        tool="propose_strategy_patch",
+        artifact_kind="strategy_draft",
+        title=f"Strategy code patch: {plan['strategy_key']}",
+        content=_json_content(plan),
+        summary=summary,
+        metrics=metrics,
+    )
+
+
+def parse_strategy_code_patch_content(content: str) -> dict[str, Any]:
+    """Validate a strategy_draft revision body as an S5 strategy_code_patch."""
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ResearchToolError("strategy code patch content must be JSON") from exc
+    if not isinstance(payload, dict) or payload.get("kind") != STRATEGY_CODE_PATCH_KIND:
+        raise ResearchToolError(
+            f"artifact is not a {STRATEGY_CODE_PATCH_KIND} plan "
+            f"(got kind={payload.get('kind')!r})"
+            if isinstance(payload, dict)
+            else "artifact is not a strategy_code_patch plan"
+        )
+    if not payload.get("strategy_key"):
+        raise ResearchToolError("strategy_code_patch missing strategy_key")
+    files = payload.get("files")
+    if not isinstance(files, dict) or not files:
+        raise ResearchToolError("strategy_code_patch files must be a non-empty object")
+    return payload
+
+
+def apply_approved_strategy_patch(
+    content: str,
+    *,
+    dry_run: bool = False,
+    also_registry: bool = True,
+) -> dict[str, Any]:
+    """Apply an approved strategy_code_patch to FRAMEWORK_ROOT (no git push)."""
+    from engineering.patch import PatchError, apply_strategy_patch
+
+    plan = parse_strategy_code_patch_content(content)
+    try:
+        result = apply_strategy_patch(
+            FRAMEWORK_ROOT,
+            plan,
+            dry_run=dry_run,
+            also_registry=also_registry,
+        )
+    except PatchError as exc:
         raise ResearchToolError(str(exc)) from exc
     result["framework_root"] = str(FRAMEWORK_ROOT)
     return result

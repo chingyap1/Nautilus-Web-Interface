@@ -92,7 +92,7 @@ class ExperimentRun(BaseModel):
     tool: str = Field(
         pattern=(
             "^(run_backtest|run_walk_forward|compare_strategies|optimise_params|"
-            "registry_status|propose_registry_patch)$"
+            "registry_status|propose_registry_patch|propose_strategy_patch)$"
         )
     )
     params: dict = Field(default_factory=dict)
@@ -102,6 +102,13 @@ class RegistryPatchApply(BaseModel):
     """S4 — apply an approved registry_patch strategy_draft (no git push)."""
 
     dry_run: bool = False
+
+
+class StrategyPatchApply(BaseModel):
+    """S5 — apply an approved strategy_code_patch draft (no git push)."""
+
+    dry_run: bool = False
+    also_registry: bool = True
 
 
 class ArtifactImport(BaseModel):
@@ -552,6 +559,69 @@ async def apply_registry_patch(
                 "dry_run": payload.dry_run,
                 "applied": result.get("applied"),
                 "strategies": result.get("strategies"),
+                "git_push": False,
+            }
+        ),
+    )
+    return {"result": result, "artifact": artifact, "revision": current}
+
+
+@router.post("/artifacts/{artifact_id}/apply-strategy-patch")
+async def apply_strategy_patch(
+    artifact_id: str,
+    user: dict = Depends(get_current_user),
+    body: StrategyPatchApply | None = None,
+):
+    """S5 — apply an approved strategy_code_patch draft to FRAMEWORK_ROOT.
+
+    Fail-closed without a current-revision approval. Never git push/merge.
+    Refuses when the apply root is not writable (e.g. Docker image layers).
+    """
+    payload = body or StrategyPatchApply()
+    owner_id = _owner(user)
+    artifact = await _owned_artifact(artifact_id, owner_id)
+    if artifact.get("kind") != "strategy_draft":
+        raise HTTPException(
+            status_code=422,
+            detail="Only strategy_draft artifacts can apply a strategy code patch",
+        )
+    revisions = await copilot_store.list_revisions(artifact["id"])
+    current = next(
+        (r for r in revisions if r["revision"] == artifact["current_revision"]),
+        None,
+    )
+    if not current:
+        raise HTTPException(status_code=409, detail="Current artifact revision not found")
+    approvals = await copilot_store.list_approvals(artifact["id"])
+    latest = next(
+        (a for a in approvals if a["artifact_revision_id"] == current["id"]),
+        None,
+    )
+    if not latest or latest.get("decision") != "approved":
+        raise HTTPException(
+            status_code=409,
+            detail="Approve the current strategy code patch revision before applying",
+        )
+    try:
+        result = copilot_research.apply_approved_strategy_patch(
+            current["content"],
+            dry_run=payload.dry_run,
+            also_registry=payload.also_registry,
+        )
+    except ResearchToolError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await database.log_action(
+        "copilot_strategy_patch_applied",
+        owner_id,
+        f"copilot_artifact:{artifact_id}",
+        json.dumps(
+            {
+                "revision_id": current["id"],
+                "dry_run": payload.dry_run,
+                "also_registry": payload.also_registry,
+                "written": result.get("written"),
+                "strategy_key": result.get("strategy_key"),
                 "git_push": False,
             }
         ),
