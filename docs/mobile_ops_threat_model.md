@@ -16,7 +16,7 @@ paper trading ops (status, approvals, emergency controls, activity).
   reachability only).
 - Reusing ARD session APIs, coding adapters, or executor registry.
 - Browser-to-model or browser-to-MCP direct connections.
-- Web push registration (no NWI push API yet — Account tab states this).
+- Treating push delivery as authority (push is attention-only; JWT remains required).
 
 ## 2. Assets
 
@@ -28,6 +28,7 @@ paper trading ops (status, approvals, emergency controls, activity).
 | Kill / flatten command path | High-impact paper emergency; single-tap must never fire. |
 | `execution.mode` | Only paper mutations allowed in v1; confuse with live → wrong plane trust. |
 | Audit / observation feed | Operator awareness; gap hides failed emergencies. |
+| Web Push subscription rows | Device endpoints for attention pings; not an auth substitute; opt-in per browser. |
 
 ## 3. Trust boundaries
 
@@ -101,7 +102,8 @@ Deep link: after re-login, restore stashed `/m/*` path when present.
    desktop; mitigate with CSP / dependency hygiene (platform-wide).
 2. Kill/flatten backend role is still `get_current_user` only — Mobile Ops
    gates to operator+; tighten server role policy remains a tracked gap.
-3. No push — attention requires open PWA or desktop until registration API.
+3. Push is opt-in attention only — missed/denied notifications still need
+   an open PWA or desktop Supervision; VAPID must be set in production.
 4. Gate 5 sustained-observation drills not yet published — Activity hooks
    are derived reads only.
 
