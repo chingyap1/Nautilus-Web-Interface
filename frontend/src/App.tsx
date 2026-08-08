@@ -2,12 +2,18 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { useEffect, useState } from "react";
 import { loadApiConfig } from "./config";
-import { Route, Switch } from "wouter";
+import { Redirect, Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import { NotificationProvider } from "./contexts/NotificationContext";
 import { NotificationContainer } from "./components/NotificationContainer";
 import TraderLayout from "./components/trader/TraderLayout";
+import MobileOpsLayout from "./mobile/MobileOpsLayout";
+import StatusPage from "./mobile/pages/StatusPage";
+import ApprovalsPage from "./mobile/pages/ApprovalsPage";
+import ControlsPage from "./mobile/pages/ControlsPage";
+import ActivityPage from "./mobile/pages/ActivityPage";
+import AccountPage from "./mobile/pages/AccountPage";
 import Home from "./pages/Home";
 import NotFound from "./pages/NotFound";
 import AdminDashboard from "./pages/AdminDashboard";
@@ -64,6 +70,13 @@ function Router() {
       <Route path="/trader/alerts"><TraderLayout><AlertsPage /></TraderLayout></Route>
       <Route path="/trader/backtesting"><TraderLayout><BacktestingPage /></TraderLayout></Route>
       <Route path="/trader/supervision"><TraderLayout><SupervisionPage /></TraderLayout></Route>
+      {/* Mobile Ops — hard /m/* boundary from TraderLayout (Platform Future brief §8.4 / §10.1) */}
+      <Route path="/m"><Redirect to="/m/status" /></Route>
+      <Route path="/m/status"><MobileOpsLayout><StatusPage /></MobileOpsLayout></Route>
+      <Route path="/m/approvals"><MobileOpsLayout><ApprovalsPage /></MobileOpsLayout></Route>
+      <Route path="/m/controls"><MobileOpsLayout><ControlsPage /></MobileOpsLayout></Route>
+      <Route path="/m/activity"><MobileOpsLayout><ActivityPage /></MobileOpsLayout></Route>
+      <Route path="/m/account"><MobileOpsLayout><AccountPage /></MobileOpsLayout></Route>
       <Route path="/docs" component={DocsPage} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />

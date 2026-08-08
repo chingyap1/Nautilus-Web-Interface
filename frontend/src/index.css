@@ -169,6 +169,35 @@
   }
 
   /**
+   * Mobile Ops shell — cool slate / steel ops floor (§9).
+   * Scoped to /m/* only so it never inherits TraderLayout chrome.
+   */
+  .mobile-ops-theme {
+    --mops-canvas: #0c1219;
+    --mops-panel: #141c26;
+    --mops-text: #d7dee8;
+    --mops-muted: #7b8798;
+    --mops-border: rgb(148 163 184 / 14%);
+    --background: var(--mops-canvas);
+    --foreground: var(--mops-text);
+    --card: var(--mops-panel);
+    --card-foreground: #f1f5f9;
+    --muted: #1a2330;
+    --muted-foreground: var(--mops-muted);
+    --border: var(--mops-border);
+    --ring: #38bdf8;
+    color-scheme: dark;
+    background-image:
+      linear-gradient(180deg, rgb(14 22 32 / 92%), rgb(12 18 25 / 98%)),
+      repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 23px,
+        rgb(148 163 184 / 4%) 24px
+      );
+  }
+
+  /**
    * Custom container utility that centers content and adds responsive padding.
    *
    * This overrides Tailwind's default container behavior to:
