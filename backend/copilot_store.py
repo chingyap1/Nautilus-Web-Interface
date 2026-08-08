@@ -145,10 +145,14 @@ async def list_messages(conversation_id: str) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-async def append_user_message(
+async def append_message(
     conversation_id: str,
+    *,
+    role: str,
     content: str,
-) -> tuple[dict[str, Any], dict[str, Any]]:
+    status: str,
+) -> dict[str, Any]:
+    """Persist one Copilot message and bump conversation/workspace timestamps."""
     now = _now()
     async with aiosqlite.connect(database.DB_PATH) as db:
         await db.execute("BEGIN IMMEDIATE")
@@ -157,32 +161,21 @@ async def append_user_message(
             (conversation_id,),
         ) as cursor:
             next_sequence = (await cursor.fetchone())[0] + 1
-        user_message = {
+        message = {
             "id": _id("MSG"),
             "conversation_id": conversation_id,
-            "role": "user",
+            "role": role,
             "content": content,
-            "status": "saved",
+            "status": status,
             "sequence": next_sequence,
             "created_at": now,
         }
-        acknowledgement = {
-            "id": _id("MSG"),
-            "conversation_id": conversation_id,
-            "role": "system",
-            "content": "Saved for Supervisor review. Model execution is not enabled in this O1 workspace yet.",
-            "status": "queued_for_supervisor",
-            "sequence": next_sequence + 1,
-            "created_at": now,
-        }
-        ordered_messages = (user_message, acknowledgement)
-        for message in ordered_messages:
-            await db.execute(
-                """INSERT INTO copilot_messages
-                   (id, conversation_id, role, content, status, sequence, created_at)
-                   VALUES (:id, :conversation_id, :role, :content, :status, :sequence, :created_at)""",
-                message,
-            )
+        await db.execute(
+            """INSERT INTO copilot_messages
+               (id, conversation_id, role, content, status, sequence, created_at)
+               VALUES (:id, :conversation_id, :role, :content, :status, :sequence, :created_at)""",
+            message,
+        )
         await db.execute(
             "UPDATE copilot_conversations SET updated_at = ? WHERE id = ?",
             (now, conversation_id),
@@ -193,7 +186,66 @@ async def append_user_message(
             (now, conversation_id),
         )
         await db.commit()
-    return user_message, acknowledgement
+    return message
+
+
+async def append_user_message(
+    conversation_id: str,
+    content: str,
+) -> dict[str, Any]:
+    """Persist a user message (Supervisor reply is appended separately in S1)."""
+    return await append_message(
+        conversation_id, role="user", content=content, status="saved"
+    )
+
+
+async def append_assistant_message(
+    conversation_id: str,
+    content: str,
+) -> dict[str, Any]:
+    """Persist a Supervisor assistant reply."""
+    return await append_message(
+        conversation_id, role="assistant", content=content, status="completed"
+    )
+
+
+def build_supervisor_messages(
+    workspace: dict[str, Any],
+    artifacts: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    user_content: str,
+) -> list[dict[str, str]]:
+    """Build OpenAI-style messages with workspace context for the Supervisor."""
+    artifact_lines: list[str] = []
+    for artifact in artifacts[:8]:
+        kind = artifact.get("kind", "artifact")
+        title = artifact.get("title", "untitled")
+        rev = artifact.get("current_revision", "?")
+        artifact_lines.append(f"- [{kind}] {title} (rev {rev})")
+    artifacts_block = "\n".join(artifact_lines) if artifact_lines else "- (none yet)"
+    strategy_id = workspace.get("strategy_id") or "none"
+    system = (
+        "You are Strategy Copilot assisting an operator who reviews proposed "
+        "strategy changes. Discuss ideas, specifications, and experiment plans. "
+        "You cannot place trades, dispatch paper commands, resume the Supervisor "
+        "interlock, or modify live agent config. Research tools "
+        "(backtest/compare/Optuna) are not enabled in this turn.\n\n"
+        f"Workspace title: {workspace.get('title', '')}\n"
+        f"Lifecycle: {workspace.get('lifecycle', 'IDEA')}\n"
+        f"Linked strategy id: {strategy_id}\n"
+        f"Recent artifacts:\n{artifacts_block}"
+    )
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    for row in history:
+        role = row.get("role")
+        content = row.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str):
+            continue
+        if not content.strip():
+            continue
+        messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_content})
+    return messages
 
 
 async def list_artifacts(workspace_id: str) -> list[dict[str, Any]]:

@@ -1,11 +1,29 @@
-"""Phase O1a Strategy Copilot persistence and authorization tests."""
+"""Phase O1a/S1 Strategy Copilot persistence, Supervisor chat, and auth tests."""
 
 import asyncio
 
 import aiosqlite
 import copilot_store
 import database
+import pytest
+import supervisor_client
 from auth_jwt import create_access_token
+
+
+@pytest.fixture(autouse=True)
+def fake_supervisor_chat():
+    """Default S1 Supervisor stub so Copilot tests do not need a live gateway."""
+
+    async def _fake(messages, *, authorization, model=None):
+        last = next(
+            (m["content"] for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        return f"Fake reply to: {last[:200]}"
+
+    supervisor_client.set_chat_completer(_fake)
+    yield
+    supervisor_client.set_chat_completer(None)
 
 
 def _create_workspace(client, **overrides):
@@ -45,9 +63,9 @@ def test_conversation_and_messages_are_durable(client):
     assert sent.status_code == 201
     body = sent.json()
     assert body["message"]["role"] == "user"
-    assert body["acknowledgement"]["role"] == "system"
-    assert body["acknowledgement"]["status"] == "queued_for_supervisor"
-    assert "not enabled" in body["acknowledgement"]["content"]
+    assert body["acknowledgement"]["role"] == "assistant"
+    assert body["acknowledgement"]["status"] == "completed"
+    assert "Fake reply to: Use a volatility filter." in body["acknowledgement"]["content"]
 
     messages = client.get(f"/api/copilot/conversations/{conversation['id']}/messages").json()[
         "messages"
@@ -63,6 +81,83 @@ def test_conversation_and_messages_are_durable(client):
     ]
     assert [message["sequence"] for message in messages] == [0, 1, 2, 3]
     assert messages[-2:] == [second["message"], second["acknowledgement"]]
+
+
+def test_supervisor_auth_failure_is_fail_closed(client, monkeypatch):
+    """Supervisor 401 must not fabricate an assistant success (S1)."""
+    import supervisor_client
+    from supervisor_client import SupervisorError
+
+    async def reject(messages, *, authorization, model=None):
+        raise SupervisorError("Supervisor rejected authentication", status_code=401)
+
+    supervisor_client.set_chat_completer(reject)
+
+    workspace = _create_workspace(client).json()["workspace"]
+    conversation = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/conversations",
+        json={"title": "Auth fail"},
+    ).json()["conversation"]
+
+    response = client.post(
+        f"/api/copilot/conversations/{conversation['id']}/messages",
+        json={"content": "Should not get a fake assistant reply."},
+    )
+    assert response.status_code == 502
+    assert "rejected authentication" in response.json()["detail"]
+
+    messages = client.get(f"/api/copilot/conversations/{conversation['id']}/messages").json()[
+        "messages"
+    ]
+    assert len(messages) == 1
+    assert messages[0]["role"] == "user"
+    assert messages[0]["content"] == "Should not get a fake assistant reply."
+    assert not any(m["role"] == "assistant" for m in messages)
+
+    audit = asyncio.run(database.get_audit_logs(action="copilot_supervisor_failed"))
+    assert audit
+    assert audit[0]["user_id"] == "admin"
+
+
+def test_supervisor_context_includes_workspace_and_artifacts(client, monkeypatch):
+    captured: list[list[dict]] = []
+
+    import supervisor_client
+
+    async def capture(messages, *, authorization, model=None):
+        captured.append(messages)
+        return "ok"
+
+    supervisor_client.set_chat_completer(capture)
+
+    workspace = _create_workspace(
+        client, title="Context workspace", strategy_id=None
+    ).json()["workspace"]
+    client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/artifacts",
+        json={
+            "kind": "specification",
+            "title": "Entry rules",
+            "content": "Use ATR filter.",
+        },
+    )
+    conversation = client.post(
+        f"/api/copilot/workspaces/{workspace['id']}/conversations",
+        json={"title": "Ctx"},
+    ).json()["conversation"]
+    assert (
+        client.post(
+            f"/api/copilot/conversations/{conversation['id']}/messages",
+            json={"content": "Summarize the spec."},
+        ).status_code
+        == 201
+    )
+    assert captured
+    system = captured[0][0]
+    assert system["role"] == "system"
+    assert "Context workspace" in system["content"]
+    assert "Entry rules" in system["content"]
+    assert captured[0][-1] == {"role": "user", "content": "Summarize the spec."}
 
 
 def test_workspace_supports_multiple_durable_conversations(client):

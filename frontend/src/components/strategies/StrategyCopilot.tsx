@@ -164,7 +164,7 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
       setDraft('');
       await refreshWorkspaces();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Could not save message');
+      setError(reason instanceof Error ? reason.message : 'Could not reach Supervisor for a reply');
     } finally {
       setBusy(false);
     }
@@ -273,14 +273,14 @@ export function StrategyCopilot({ strategies }: { strategies: StrategyOption[] }
                 </div>
               </div>
             )) : (
-              <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-sm text-slate-500">Describe the hypothesis, market, timeframe, and risk constraints you want the future Supervisor to review.</div>
+              <div className="rounded-xl border border-dashed border-white/10 p-6 text-center text-sm text-slate-500">Describe the hypothesis, market, timeframe, and risk constraints for the Supervisor to review.</div>
             )}
           </div>
           {error && <p className="mx-5 mb-3 rounded-lg border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-300 sm:mx-7">{error}</p>}
           <form onSubmit={sendMessage} className="border-t border-white/8 p-4 sm:p-5">
             <div className="flex gap-3">
               <textarea value={draft} onChange={(event) => setDraft(event.target.value)} disabled={!conversation || busy || loadingWorkspace} maxLength={10000} rows={2} aria-label="Copilot message" placeholder="Describe a strategy idea…" className="min-h-12 flex-1 resize-none rounded-xl border border-white/10 bg-slate-950/40 px-4 py-3 text-sm text-white placeholder:text-slate-600" />
-              <button disabled={!conversation || !draft.trim() || busy || loadingWorkspace} aria-label="Save message" className="self-stretch rounded-xl bg-cyan-400 px-4 text-slate-950 disabled:opacity-40"><Send className="h-5 w-5" /></button>
+              <button disabled={!conversation || !draft.trim() || busy || loadingWorkspace} aria-label="Send message" className="self-stretch rounded-xl bg-cyan-400 px-4 text-slate-950 disabled:opacity-40"><Send className="h-5 w-5" /></button>
             </div>
           </form>
         </div>

@@ -30,9 +30,9 @@ export interface CopilotConversation {
 export interface CopilotMessage {
   id: string;
   conversation_id: string;
-  role: 'user' | 'system';
+  role: 'user' | 'assistant' | 'system';
   content: string;
-  status: 'saved' | 'queued_for_supervisor';
+  status: 'saved' | 'completed' | 'queued_for_supervisor' | 'supervisor_error';
   sequence: number;
   created_at: string;
 }

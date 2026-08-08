@@ -43,6 +43,7 @@ def reset_rate_limit_counters():
     yield
 
 
+
 @pytest.fixture(autouse=True)
 def isolated_database(tmp_path, monkeypatch):
     """Route database and command modules to one writable DB per test."""

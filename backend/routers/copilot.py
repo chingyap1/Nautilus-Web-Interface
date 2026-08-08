@@ -1,12 +1,14 @@
-"""Authenticated, non-executing Strategy Copilot workspace API (Phase O1a)."""
+"""Authenticated Strategy Copilot workspace API (O1 + S1 Supervisor chat)."""
 
 import json
 
 import copilot_store
 import database
+import supervisor_client
 from auth_jwt import get_current_user
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, field_validator
+from supervisor_client import SupervisorError
 
 router = APIRouter(prefix="/api/copilot", tags=["strategy-copilot"])
 
@@ -170,18 +172,68 @@ async def list_messages(conversation_id: str, user: dict = Depends(get_current_u
 async def create_message(
     conversation_id: str,
     body: MessageCreate,
+    request: Request,
     user: dict = Depends(get_current_user),
 ):
+    """Persist a user message and return a Supervisor assistant reply (S1).
+
+    Fail-closed: if Supervisor auth fails or the gateway is unreachable, the
+    user message is still durable but no fabricated assistant success is
+    returned — the API responds with 5xx/401 and omits a fake acknowledgement.
+    """
     owner_id = _owner(user)
-    await _owned_conversation(conversation_id, owner_id)
-    message, acknowledgement = await copilot_store.append_user_message(
-        conversation_id, body.content
+    conversation = await _owned_conversation(conversation_id, owner_id)
+    workspace = await _owned_workspace(conversation["workspace_id"], owner_id)
+    history = await copilot_store.list_messages(conversation_id)
+    artifacts = await copilot_store.list_artifacts(workspace["id"])
+    supervisor_messages = copilot_store.build_supervisor_messages(
+        workspace, artifacts, history, body.content
+    )
+
+    authorization = request.headers.get("Authorization", "")
+    try:
+        assistant_text = await supervisor_client.complete_chat(
+            supervisor_messages,
+            authorization=authorization,
+        )
+    except SupervisorError as exc:
+        # Persist the user turn so the operator does not lose the prompt, but
+        # do not invent an assistant success reply (fail-closed).
+        message = await copilot_store.append_user_message(conversation_id, body.content)
+        await database.log_action(
+            "copilot_supervisor_failed",
+            user_id=owner_id,
+            resource=f"copilot_conversation:{conversation_id}",
+            details=json.dumps(
+                {
+                    "message_id": message["id"],
+                    "error": str(exc),
+                    "supervisor_status": exc.status_code,
+                }
+            ),
+        )
+        # Map Supervisor auth failures to 502 so the browser does not treat a
+        # valid NWI session as logged-out (fail-closed without session wipe).
+        status = exc.status_code or 502
+        if status in (401, 403) or status < 400:
+            status = 502
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    message = await copilot_store.append_user_message(conversation_id, body.content)
+    acknowledgement = await copilot_store.append_assistant_message(
+        conversation_id, assistant_text
     )
     await database.log_action(
         "copilot_message_created",
         user_id=owner_id,
         resource=f"copilot_conversation:{conversation_id}",
-        details=json.dumps({"message_id": message["id"], "status": message["status"]}),
+        details=json.dumps(
+            {
+                "message_id": message["id"],
+                "assistant_message_id": acknowledgement["id"],
+                "status": acknowledgement["status"],
+            }
+        ),
     )
     return {"message": message, "acknowledgement": acknowledgement}
 
