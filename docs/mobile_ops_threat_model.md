@@ -69,6 +69,10 @@ Paper Nautilus agent + RiskService
   reason string + second confirm.
 
 ### Information disclosure
+- *Threat:* push payload leaks state to a locked screen or a stale device.
+- *Mitigation:* notifications carry only command name, agent id, actor, and
+  a deep link — no payload, balance, or token. Endpoints returning 404/410
+  are pruned on send, and unsubscribing removes the row server-side.
 - *Threat:* live mode mistaken for paper; JWT in XSS.
 - *Mitigation:* persistent PAPER badge; Controls/Approvals refuse
   non-paper mutations client-side (server remains authoritative); no

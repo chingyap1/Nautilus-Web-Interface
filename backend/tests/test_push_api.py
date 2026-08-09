@@ -8,9 +8,9 @@ def test_vapid_public_key_available_in_dev(client, monkeypatch):
     monkeypatch.delenv("VAPID_PRIVATE_KEY", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "development")
     # Reset cached ephemeral keys between tests
-    import routers.push as push_mod
+    import push_vapid
 
-    push_mod._DEV_VAPID = None
+    push_vapid.reset_dev_keys()
 
     r = client.get("/api/push/vapid-public-key")
     assert r.status_code == 200, r.text
@@ -21,9 +21,9 @@ def test_vapid_public_key_available_in_dev(client, monkeypatch):
 
 def test_subscribe_status_unsubscribe(client, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
-    import routers.push as push_mod
+    import push_vapid
 
-    push_mod._DEV_VAPID = None
+    push_vapid.reset_dev_keys()
 
     status = client.get("/api/push/status")
     assert status.status_code == 200
@@ -59,9 +59,9 @@ def test_subscribe_status_unsubscribe(client, monkeypatch):
 def test_production_requires_vapid_env(client, monkeypatch):
     monkeypatch.delenv("VAPID_PUBLIC_KEY", raising=False)
     monkeypatch.setenv("ENVIRONMENT", "production")
-    import routers.push as push_mod
+    import push_vapid
 
-    push_mod._DEV_VAPID = None
+    push_vapid.reset_dev_keys()
 
     r = client.get("/api/push/vapid-public-key")
     assert r.status_code == 503
@@ -70,9 +70,9 @@ def test_production_requires_vapid_env(client, monkeypatch):
 def test_unsubscribe_other_users_endpoint_is_noop(client, monkeypatch, tmp_path):
     """Deleting an endpoint not owned by the caller returns removed=false."""
     monkeypatch.setenv("ENVIRONMENT", "development")
-    import routers.push as push_mod
+    import push_vapid
 
-    push_mod._DEV_VAPID = None
+    push_vapid.reset_dev_keys()
 
     r = client.post(
         "/api/push/unsubscribe",

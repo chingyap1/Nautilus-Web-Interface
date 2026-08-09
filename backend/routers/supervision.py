@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, HTTPException
 from pydantic import BaseModel
 
+import push_notify
 from auth_jwt import get_current_user, require_admin, require_operator
 from mcp_adapter import InterlockPausedError, UnknownCommandError
 from state import mcp_adapter
@@ -111,6 +112,21 @@ async def inspect(
         raise HTTPException(status_code=400, detail=str(exc))
 
     response = _dataclass_to_dict(result)
+
+    proposal = getattr(result, "proposal", None)
+    if proposal is not None:
+        # Approvers act on this; push is attention only, approval stays in NWI.
+        await push_notify.notify_roles(
+            ("approver", "admin"),
+            title="Approval needed",
+            body=(
+                f"{proposal.command_name} proposed for {proposal.target_agent_id} "
+                f"by {proposal.requester}"
+            ),
+            url="/m/approvals",
+            dedupe_key=f"proposal:{proposal.proposal_id}",
+        )
+
     # Flatten: proposal is a CommandProposal dataclass or None
     return response
 
@@ -141,6 +157,14 @@ async def engage_interlock(
         actor=_user.get("sub", _user.get("username", "unknown")),
         reason=body.reason,
     )
+    # Only an admin can resume, so they are the ones who need to see this.
+    await push_notify.notify_roles(
+        ("admin",),
+        title="Supervisor commands paused",
+        body=f"{record.actor} engaged the interlock: {record.reason}",
+        url="/m/controls",
+        dedupe_key=f"interlock:paused:{record.updated_at}",
+    )
     return {
         "state": record.state.value,
         "actor": record.actor,
@@ -158,6 +182,13 @@ async def resume_interlock(
     record = mcp_adapter.resume_interlock(
         actor=_user.get("sub", _user.get("username", "unknown")),
         reason=body.reason,
+    )
+    await push_notify.notify_roles(
+        ("operator", "approver", "admin"),
+        title="Supervisor commands resumed",
+        body=f"{record.actor} resumed the interlock: {record.reason}",
+        url="/m/controls",
+        dedupe_key=f"interlock:resumed:{record.updated_at}",
     )
     return {
         "state": record.state.value,
