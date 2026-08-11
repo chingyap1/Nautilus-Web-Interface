@@ -293,7 +293,10 @@ async def init_db() -> None:
                 error_message   TEXT,
                 submitted_at    TEXT,
                 completed_at    TEXT,
-                created_at      TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                origin          TEXT DEFAULT 'human',
+                proposal_id     TEXT,
+                approval_id     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS events (
@@ -313,6 +316,18 @@ async def init_db() -> None:
             """
         )
         await cmd_db.commit()
+
+        # F1 — provenance columns for MCP-origin commands
+        for migration in [
+            "ALTER TABLE commands ADD COLUMN origin TEXT DEFAULT 'human'",
+            "ALTER TABLE commands ADD COLUMN proposal_id TEXT",
+            "ALTER TABLE commands ADD COLUMN approval_id TEXT",
+        ]:
+            try:
+                await cmd_db.execute(migration)
+                await cmd_db.commit()
+            except aiosqlite.OperationalError:
+                pass  # Column already exists
 
     # Seed admin user outside the schema transaction (needs own connection)
     admin_pw = os.getenv("ADMIN_PASSWORD", "admin")
