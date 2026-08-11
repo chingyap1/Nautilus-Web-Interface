@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import Any
 
 from auth_jwt import require_approver
+from dispatch_bridge import DispatchBridgeError
+from dispatch_bridge import persist as persist_command
 from fastapi import APIRouter, Body, Depends, HTTPException
 from mcp_adapter import DispatchError
 from pydantic import BaseModel
@@ -175,6 +177,28 @@ async def dispatch_approval(
     except DispatchError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
+    # F1 — bridge the dispatch into a durable command record.
+    # The adapter has consumed the approval and set DISPATCHED; now persist
+    # the command so the CommandProcessor can publish it to the agent.
+    try:
+        command = await persist_command(
+            proposal=proposal,
+            approval=approval,
+            dispatch_id=result["dispatch_id"],
+        )
+    except DispatchBridgeError as exc:
+        mcp_adapter.audit.record(
+            "dispatch_failed",
+            actor=_principal(user),
+            proposal_id=proposal.proposal_id,
+            reason=exc.reason,
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": exc.reason, "proposal_id": proposal.proposal_id},
+        ) from exc
+
+    result["command_id"] = command["command_id"]
     return result
 
 

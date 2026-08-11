@@ -128,7 +128,10 @@ async def init_commands_db() -> None:
                 error_message   TEXT,
                 submitted_at    TEXT,
                 completed_at    TEXT,
-                created_at      TEXT NOT NULL
+                created_at      TEXT NOT NULL,
+                origin          TEXT DEFAULT 'human',
+                proposal_id     TEXT,
+                approval_id     TEXT
             );
 
             CREATE TABLE IF NOT EXISTS events (
@@ -165,6 +168,9 @@ async def create_command(
     strategy_id: Optional[str] = None,
     account: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    origin: str = "human",
+    proposal_id: Optional[str] = None,
+    approval_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new durable command record with PENDING status."""
     command_id = str(uuid.uuid4())
@@ -188,6 +194,9 @@ async def create_command(
         "submitted_at": None,
         "completed_at": None,
         "created_at": now,
+        "origin": origin,
+        "proposal_id": proposal_id,
+        "approval_id": approval_id,
     }
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -197,8 +206,9 @@ async def create_command(
                 (command_id, command_type, status, instrument, side, order_type,
                  quantity, price, strategy_id, account, idempotency_key,
                  client_order_id, venue_order_id, error_message,
-                 submitted_at, completed_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 submitted_at, completed_at, created_at,
+                 origin, proposal_id, approval_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 command["command_id"], command["command_type"], command["status"],
@@ -208,6 +218,7 @@ async def create_command(
                 command["client_order_id"], command["venue_order_id"],
                 command["error_message"], command["submitted_at"],
                 command["completed_at"], command["created_at"],
+                command["origin"], command["proposal_id"], command["approval_id"],
             ),
         )
         await db.commit()
