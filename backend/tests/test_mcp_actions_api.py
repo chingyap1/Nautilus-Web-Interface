@@ -1,10 +1,11 @@
 """B5 — MCP approve/dispatch/reject API gate tests (D6.4–D6.6, D7, D3–D6).
 
-Tests the 3 FastAPI endpoints in routers/mcp_actions.py:
+Tests the 4 FastAPI endpoints in routers/mcp_actions.py:
 
-1. POST /api/mcp/approvals — approve a pending proposal (step-up for HIGH/CRITICAL)
-2. POST /api/mcp/approvals/{approval_id}/dispatch — dispatch an approved command
-3. POST /api/mcp/proposals/{proposal_id}/reject — reject a pending proposal
+1. POST /api/mcp/propose — create a command proposal for human approval
+2. POST /api/mcp/approvals — approve a pending proposal (step-up for HIGH/CRITICAL)
+3. POST /api/mcp/approvals/{approval_id}/dispatch — dispatch an approved command
+4. POST /api/mcp/proposals/{proposal_id}/reject — reject a pending proposal
 
 Gate criteria:
 - All 3 endpoints return correct status codes and JSON shapes for happy paths.
@@ -39,6 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 def client(tmp_path, monkeypatch):
     """Authenticated admin test client with isolated DB."""
     import database
+
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
 
     from fastapi.testclient import TestClient
@@ -56,6 +58,7 @@ def client(tmp_path, monkeypatch):
 def viewer_client(tmp_path, monkeypatch):
     """Authenticated viewer test client with isolated DB."""
     import database
+
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
 
     from fastapi.testclient import TestClient
@@ -66,7 +69,9 @@ def viewer_client(tmp_path, monkeypatch):
         assert r.status_code == 200
         admin_token = r.json()["access_token"]
         c.headers.update({"Authorization": f"Bearer {admin_token}"})
-        c.post("/api/users", json={"username": "viewer1", "password": "secret123", "role": "viewer"})
+        c.post(
+            "/api/users", json={"username": "viewer1", "password": "secret123", "role": "viewer"}
+        )
 
         r = c.post("/api/auth/login", json={"username": "viewer1", "password": "secret123"})
         assert r.status_code == 200
@@ -79,6 +84,7 @@ def viewer_client(tmp_path, monkeypatch):
 def operator_client(tmp_path, monkeypatch):
     """Authenticated operator test client with isolated DB."""
     import database
+
     monkeypatch.setattr(database, "DB_PATH", tmp_path / "test.db")
 
     from fastapi.testclient import TestClient
@@ -102,6 +108,7 @@ def operator_client(tmp_path, monkeypatch):
 def reset_rate_limit_counters():
     try:
         import nautilus_fastapi
+
         nautilus_fastapi._login_counters.clear()
         nautilus_fastapi._global_counters.clear()
     except (ImportError, AttributeError):
@@ -121,6 +128,7 @@ def isolated_database(tmp_path, monkeypatch):
     asyncio.run(database.init_db())
     asyncio.run(commands.init_commands_db())
     import stores
+
     monkeypatch.setattr(stores, "DB_PATH", path)
     asyncio.run(stores.init_stores_db())
 
@@ -130,6 +138,7 @@ def reset_adapter_state():
     """Clear the shared MCP adapter audit log and reset interlock before each test."""
     try:
         from state import mcp_adapter
+
         mcp_adapter.audit.clear()
         mcp_adapter.resume_interlock(actor="test-setup", reason="test reset")
     except (ImportError, AttributeError):
@@ -141,6 +150,7 @@ def reset_adapter_state():
 def reset_step_up():
     """Reset the step-up verifier to a clean TOTP verifier before each test."""
     from step_up import TOTPStepUpVerifier, set_step_up_verifier
+
     set_step_up_verifier(TOTPStepUpVerifier())
     yield
 
@@ -224,7 +234,138 @@ def _set_totp_secret(principal: str = "admin", secret: str = "JBSWY3DPEHPK3PXP")
 def _generate_totp(secret: str = "JBSWY3DPEHPK3PXP") -> str:
     """Generate a valid TOTP code for the given secret."""
     from step_up import _totp_code
+
     return _totp_code(secret, int(time.time()))
+
+
+# ---------------------------------------------------------------------------
+# 0. POST /api/mcp/propose — create a proposal
+# ---------------------------------------------------------------------------
+
+
+class TestPropose:
+    """POST /api/mcp/propose — create a command proposal."""
+
+    def test_propose_low_risk_success(self, client):
+        """LOW-risk proposal: created successfully with approver role."""
+        r = client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-12345"},
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert "proposal_id" in body
+        assert body["command_name"] == "cancel_order"
+        assert body["target_agent_id"] == "agent-btc"
+        assert body["status"] == "pending"
+        assert body["payload"] == {"client_order_id": "O-12345"}
+
+    def test_propose_with_idempotency_key(self, client):
+        """Propose with explicit idempotency key."""
+        r = client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-67890"},
+                "idempotency_key": "test-key-123",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["idempotency_key"] == "test-key-123"
+
+    def test_propose_unknown_command_returns_400(self, client):
+        """Unknown command name returns 400."""
+        r = client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "nonexistent_command",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {},
+            },
+        )
+        assert r.status_code == 400
+
+    def test_propose_interlock_paused_returns_409(self, client):
+        """Propose fails closed (409) when interlock is PAUSED."""
+        client.post("/api/supervision/interlock/engage", json={"reason": "test"})
+        r = client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-blocked"},
+            },
+        )
+        assert r.status_code == 409
+
+    def test_propose_viewer_blocked(self, viewer_client):
+        """Viewer role cannot propose (403)."""
+        r = viewer_client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-viewer"},
+            },
+        )
+        assert r.status_code == 403
+
+    def test_propose_operator_blocked(self, operator_client):
+        """Operator role cannot propose (403)."""
+        r = operator_client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-op"},
+            },
+        )
+        assert r.status_code == 403
+
+    def test_propose_audited(self, client):
+        """Propose action is recorded in the audit log."""
+        client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-audit"},
+            },
+        )
+        from state import mcp_adapter
+
+        actions = [e["action"] for e in mcp_adapter.audit.entries()]
+        assert "propose" in actions
+
+    def test_propose_then_approve_full_flow(self, client):
+        """Full flow: propose via API, then approve via API."""
+        r1 = client.post(
+            "/api/mcp/propose",
+            json={
+                "command_name": "cancel_order",
+                "target_agent_id": "agent-btc",
+                "requester": "test",
+                "payload": {"client_order_id": "O-flow"},
+            },
+        )
+        assert r1.status_code == 200
+        pid = r1.json()["proposal_id"]
+
+        r2 = client.post("/api/mcp/approvals", json={"proposal_id": pid})
+        assert r2.status_code == 200
+        assert r2.json()["status"] == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +472,7 @@ class TestApprove:
         pid = _create_low_risk_proposal()
         client.post("/api/mcp/approvals", json={"proposal_id": pid})
         from state import mcp_adapter
+
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
         assert "approve" in actions
 
@@ -396,6 +538,7 @@ class TestDispatch:
 
         # Revoke elevation before dispatch
         from step_up import get_step_up_verifier
+
         get_step_up_verifier().revoke_elevation("admin")
 
         r2 = client.post(f"/api/mcp/approvals/{aid}/dispatch")
@@ -409,6 +552,7 @@ class TestDispatch:
         client.post(f"/api/mcp/approvals/{aid}/dispatch")
 
         from state import mcp_adapter
+
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
         assert "dispatch" in actions
 
@@ -493,6 +637,7 @@ class TestReject:
         pid = _create_low_risk_proposal()
         client.post(f"/api/mcp/proposals/{pid}/reject")
         from state import mcp_adapter
+
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
         assert "reject" in actions
 
@@ -580,6 +725,7 @@ class TestAdversarial:
 
         # Revoke the elevated session so the second call must re-verify
         from step_up import get_step_up_verifier
+
         get_step_up_verifier().revoke_elevation("admin")
 
         # Create another HIGH-risk proposal and try to reuse the same code
@@ -591,11 +737,13 @@ class TestAdversarial:
         """A service-principal JWT cannot hit the approve endpoint (403)."""
         from auth_jwt import create_access_token
 
-        service_token = create_access_token({
-            "sub": "service:supervisor",
-            "role": "operator",
-            "principal_type": "service",
-        })
+        service_token = create_access_token(
+            {
+                "sub": "service:supervisor",
+                "role": "operator",
+                "principal_type": "service",
+            }
+        )
         pid = _create_low_risk_proposal()
         r = client.post(
             "/api/mcp/approvals",
@@ -608,11 +756,13 @@ class TestAdversarial:
         """A service-principal JWT cannot hit the dispatch endpoint (403)."""
         from auth_jwt import create_access_token
 
-        service_token = create_access_token({
-            "sub": "service:supervisor",
-            "role": "operator",
-            "principal_type": "service",
-        })
+        service_token = create_access_token(
+            {
+                "sub": "service:supervisor",
+                "role": "operator",
+                "principal_type": "service",
+            }
+        )
         r = client.post(
             "/api/mcp/approvals/APR-WHATEVER/dispatch",
             headers={"Authorization": f"Bearer {service_token}"},
@@ -623,11 +773,13 @@ class TestAdversarial:
         """A service-principal JWT cannot hit the reject endpoint (403)."""
         from auth_jwt import create_access_token
 
-        service_token = create_access_token({
-            "sub": "service:supervisor",
-            "role": "operator",
-            "principal_type": "service",
-        })
+        service_token = create_access_token(
+            {
+                "sub": "service:supervisor",
+                "role": "operator",
+                "principal_type": "service",
+            }
+        )
         pid = _create_low_risk_proposal()
         r = client.post(
             f"/api/mcp/proposals/{pid}/reject",
@@ -652,6 +804,7 @@ class TestAuditVisibility:
         client.post(f"/api/mcp/approvals/{aid}/dispatch")
 
         from state import mcp_adapter
+
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
         assert "approve" in actions
         assert "dispatch" in actions
@@ -662,6 +815,7 @@ class TestAuditVisibility:
         client.post(f"/api/mcp/proposals/{pid}/reject", json={"reason": "test reason"})
 
         from state import mcp_adapter
+
         reject_entries = [e for e in mcp_adapter.audit.entries() if e["action"] == "reject"]
         assert len(reject_entries) == 1
         assert reject_entries[0]["detail"].get("reason") == "test reason"
