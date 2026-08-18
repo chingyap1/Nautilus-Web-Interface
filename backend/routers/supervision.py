@@ -23,6 +23,7 @@ import push_notify
 from auth_jwt import get_current_user, require_admin, require_operator
 from mcp_adapter import InterlockPausedError, UnknownCommandError
 from state import mcp_adapter
+from step_up import get_step_up_verifier
 from supervision.bridge import SupervisionBridge
 from supervision.health import AgentOffline
 
@@ -56,6 +57,7 @@ class InterlockEngageRequest(BaseModel):
 
 class InterlockResumeRequest(BaseModel):
     reason: str = "Manual resume via NWI"
+    step_up_code: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +178,25 @@ async def engage_interlock(
 @router.post("/interlock/resume")
 async def resume_interlock(
     body: InterlockResumeRequest = Body(default=InterlockResumeRequest()),
-    _user: dict = Depends(require_admin),
+    user: dict = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Resume the interlock. Requires admin role."""
+    """Resume the interlock. Requires admin role + step-up (D6.6)."""
+    principal = user.get("sub", user.get("username", "unknown"))
+    verifier = get_step_up_verifier()
+    if not verifier.is_elevated(principal):
+        if body.step_up_code:
+            if not verifier.verify(principal, body.step_up_code):
+                raise HTTPException(
+                    status_code=403,
+                    detail={"reason": "step_up_required", "message": "Invalid or expired step-up code"},
+                )
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail={"reason": "step_up_required", "message": "Step-up authentication required to resume the interlock"},
+            )
     record = mcp_adapter.resume_interlock(
-        actor=_user.get("sub", _user.get("username", "unknown")),
+        actor=principal,
         reason=body.reason,
     )
     await push_notify.notify_roles(
