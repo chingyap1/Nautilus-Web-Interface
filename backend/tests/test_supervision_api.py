@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest import mock
@@ -192,12 +193,23 @@ def isolated_database(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def reset_step_up():
+    """Reset the step-up verifier and seed admin TOTP secret before each test."""
+    from step_up import TOTPStepUpVerifier, set_step_up_verifier
+    verifier = TOTPStepUpVerifier()
+    verifier.set_secret("admin", "JBSWY3DPEHPK3PXP")
+    set_step_up_verifier(verifier)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def reset_adapter_state():
     """Clear the shared MCP adapter audit log and reset interlock before each test."""
     try:
         from state import mcp_adapter
         mcp_adapter.audit.clear()
-        # Reset interlock to RESUMED for test isolation
+        # Reset interlock to RESUMED for test isolation (direct adapter call,
+        # bypasses HTTP step-up enforcement — this is test setup, not a user action)
         mcp_adapter.resume_interlock(actor="test-setup", reason="test reset")
     except (ImportError, AttributeError):
         pass
@@ -408,10 +420,12 @@ class TestInterlockResume:
     """POST /api/supervision/interlock/resume — resume interlock (admin only)."""
 
     def test_resume_as_admin_returns_200(self, client):
+        from step_up import _totp_code
         # First engage
         client.post("/api/supervision/interlock/engage", json={"reason": "stop"})
-        # Then resume
-        r = client.post("/api/supervision/interlock/resume", json={"reason": "all clear"})
+        # Then resume with step-up code
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+        r = client.post("/api/supervision/interlock/resume", json={"reason": "all clear", "step_up_code": code})
         assert r.status_code == 200
         body = r.json()
         assert body["state"] == "resumed"
@@ -425,9 +439,22 @@ class TestInterlockResume:
         r = viewer_client.post("/api/supervision/interlock/resume", json={"reason": "resume"})
         assert r.status_code == 403
 
-    def test_resume_default_reason(self, client):
+    def test_resume_without_step_up_returns_403(self, client):
+        """Resume without step-up code returns 403 (D6.6)."""
         client.post("/api/supervision/interlock/engage", json={"reason": "stop"})
-        r = client.post("/api/supervision/interlock/resume")
+        r = client.post("/api/supervision/interlock/resume", json={"reason": "all clear"})
+        assert r.status_code == 403
+        detail = r.json()["detail"]
+        if isinstance(detail, dict):
+            assert detail["reason"] == "step_up_required"
+        else:
+            assert "step_up_required" in str(detail)
+
+    def test_resume_default_reason_with_step_up(self, client):
+        from step_up import _totp_code
+        client.post("/api/supervision/interlock/engage", json={"reason": "stop"})
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+        r = client.post("/api/supervision/interlock/resume", json={"step_up_code": code})
         assert r.status_code == 200
         assert r.json()["state"] == "resumed"
 
@@ -510,8 +537,10 @@ class TestNoDispatchOrApprove:
 
     def test_engage_resume_no_dispatch_approve(self, client):
         """Engage and resume interlock: no dispatch or approve in audit."""
+        from step_up import _totp_code
         client.post("/api/supervision/interlock/engage", json={"reason": "test"})
-        client.post("/api/supervision/interlock/resume", json={"reason": "test"})
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+        client.post("/api/supervision/interlock/resume", json={"reason": "test", "step_up_code": code})
 
         from state import mcp_adapter
         actions = [e["action"] for e in mcp_adapter.audit.entries()]
@@ -529,8 +558,10 @@ class TestAuditLog:
 
     def test_get_audit_returns_entries(self, client):
         """Audit endpoint returns entries after engage/resume."""
+        from step_up import _totp_code
         client.post("/api/supervision/interlock/engage", json={"reason": "test"})
-        client.post("/api/supervision/interlock/resume", json={"reason": "done"})
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+        client.post("/api/supervision/interlock/resume", json={"reason": "done", "step_up_code": code})
 
         r = client.get("/api/supervision/audit")
         assert r.status_code == 200

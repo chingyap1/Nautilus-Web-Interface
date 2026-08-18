@@ -149,6 +149,14 @@ async def lifespan(app: FastAPI):
     _check_production_secrets()
     # Initialise the SQLite schema + seed defaults
     await database.init_db()
+    # Seed admin TOTP secret for step-up authentication (D6.5/D6.6).
+    # In production, set ADMIN_TOTP_SECRET to a unique base32 secret per
+    # operator.  The default is for dev/paper trading only.
+    _admin_totp = os.getenv("ADMIN_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
+    from step_up import get_step_up_verifier, TOTPStepUpVerifier
+    _verifier = get_step_up_verifier()
+    if isinstance(_verifier, TOTPStepUpVerifier):
+        _verifier.set_secret("admin", _admin_totp)
     # Initialise commands/events tables (Phase 2 — durable command layer)
     await _commands.init()
     # Initialise proposal/approval/interlock tables (A3 — D4)
