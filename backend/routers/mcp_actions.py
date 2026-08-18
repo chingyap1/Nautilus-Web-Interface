@@ -18,7 +18,7 @@ from auth_jwt import require_approver
 from dispatch_bridge import DispatchBridgeError
 from dispatch_bridge import persist as persist_command
 from fastapi import APIRouter, Body, Depends, HTTPException
-from mcp_adapter import DispatchError
+from mcp_adapter import DispatchError, InterlockPausedError, UnknownCommandError
 from pydantic import BaseModel
 from state import mcp_adapter
 from step_up import get_step_up_verifier
@@ -42,6 +42,14 @@ _approval_store = ApprovalStore()
 class ApproveRequest(BaseModel):
     proposal_id: str
     step_up_code: str | None = None
+
+
+class ProposeRequest(BaseModel):
+    command_name: str
+    target_agent_id: str
+    requester: str
+    payload: dict[str, Any] = {}
+    idempotency_key: str | None = None
 
 
 class RejectRequest(BaseModel):
@@ -94,7 +102,10 @@ def _require_step_up(user: dict, risk_class: RiskClass, step_up_code: str | None
 
     raise HTTPException(
         status_code=403,
-        detail={"reason": "step_up_required", "message": "Step-up authentication required for this action"},
+        detail={
+            "reason": "step_up_required",
+            "message": "Step-up authentication required for this action",
+        },
     )
 
 
@@ -116,6 +127,49 @@ def _approval_to_dict(approval) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.post("/propose")
+async def propose_command(
+    body: ProposeRequest = Body(...),
+    user: dict = Depends(require_approver),
+) -> dict[str, Any]:
+    """Create a command proposal for human approval.
+
+    Requires ``approver`` role (or ``admin``).  The proposal is created
+    in the ``PENDING`` state and must be separately approved and
+    dispatched — this endpoint does not execute anything.
+
+    Fails closed (409) if the interlock is PAUSED.
+    """
+    try:
+        proposal = mcp_adapter.propose(
+            command_name=body.command_name,
+            target_agent_id=body.target_agent_id,
+            requester=body.requester,
+            payload=body.payload,
+            idempotency_key=body.idempotency_key,
+        )
+    except InterlockPausedError:
+        raise HTTPException(
+            status_code=409,
+            detail="Supervisor interlock is PAUSED — cannot propose",
+        )
+    except UnknownCommandError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "proposal_id": proposal.proposal_id,
+        "command_name": proposal.command_name,
+        "command_version": proposal.command_version,
+        "target_agent_id": proposal.target_agent_id,
+        "requester": proposal.requester,
+        "payload": proposal.payload,
+        "idempotency_key": proposal.idempotency_key,
+        "created_at": proposal.created_at,
+        "expires_at": proposal.expires_at,
+        "status": proposal.status.value,
+    }
 
 
 @router.post("/approvals")
