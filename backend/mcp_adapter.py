@@ -217,8 +217,9 @@ class MCPAdapter:
         # Check interlock state
         record = asyncio_run(self._interlock.get())
         if record:
+            effective_state = evaluate_interlock(record, now=datetime.now(UTC))
             resources["interlock"] = {
-                "state": record.state.value,
+                "state": effective_state.value,
                 "updated_at": record.updated_at,
                 "lease_seconds": record.lease_seconds,
             }

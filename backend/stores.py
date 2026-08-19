@@ -16,9 +16,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Optional
 
 import aiosqlite
-
 from database import DB_PATH
+
 from mcp_gateway.approvals import hash_payload
+from mcp_gateway.interlock import evaluate_interlock
 from mcp_gateway.models import (
     ApprovalStatus,
     CommandApproval,
@@ -495,4 +496,56 @@ class InterlockStore:
             reason=reason,
             updated_at=now_iso,
             lease_seconds=INTERLOCK_LEASE_SECONDS,
+        )
+
+    async def renew_if_fresh(
+        self, *, now: datetime | None = None
+    ) -> InterlockRecord | None:
+        """Renew an already-valid RESUMED lease without reviving stale state.
+
+        NWI owns lease freshness. The immediate transaction serializes this
+        check-and-update with engage/resume so an operator pause always wins.
+        """
+        now_ = now or datetime.now(UTC)
+        now_iso = now_.isoformat()
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                async with db.execute("SELECT * FROM interlock WHERE id=1") as cur:
+                    row = await cur.fetchone()
+                if not row:
+                    await db.commit()
+                    return None
+
+                try:
+                    record = InterlockRecord(
+                        state=InterlockState(row["state"]),
+                        actor=row["actor"],
+                        reason=row["reason"],
+                        updated_at=row["updated_at"],
+                        lease_seconds=row["lease_seconds"],
+                    )
+                    effective_state = evaluate_interlock(record, now=now_)
+                except (TypeError, ValueError):
+                    effective_state = InterlockState.PAUSED
+                if effective_state != InterlockState.RESUMED:
+                    await db.commit()
+                    return None
+
+                await db.execute(
+                    "UPDATE interlock SET updated_at=? WHERE id=1 AND state='resumed'",
+                    (now_iso,),
+                )
+                await db.commit()
+            except Exception:
+                await db.execute("ROLLBACK")
+                raise
+
+        return InterlockRecord(
+            state=InterlockState.RESUMED,
+            actor=record.actor,
+            reason=record.reason,
+            updated_at=now_iso,
+            lease_seconds=record.lease_seconds,
         )

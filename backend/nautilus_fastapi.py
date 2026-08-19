@@ -143,6 +143,24 @@ async def _purge_expired_tokens_loop() -> None:
             pass
 
 
+INTERLOCK_RENEW_INTERVAL_SECONDS = 10.0
+
+
+async def _renew_interlock_loop() -> None:
+    """Keep only an already-fresh resumed interlock lease alive."""
+    from stores import InterlockStore
+
+    store = InterlockStore()
+    while True:
+        await asyncio.sleep(INTERLOCK_RENEW_INTERVAL_SECONDS)
+        try:
+            await store.renew_if_fresh()
+        except Exception as exc:
+            # Renewal failures intentionally fail closed when the prior lease
+            # expires; the loop must not revive stale state on recovery.
+            print(f"[interlock] Lease renewal failed: {exc}", file=sys.stderr)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: check secrets before anything else
@@ -170,9 +188,10 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     alert_task = asyncio.create_task(run_alert_monitor())
     purge_task = asyncio.create_task(_purge_expired_tokens_loop())
+    interlock_task = asyncio.create_task(_renew_interlock_loop())
     yield
     # Shutdown: cancel background tasks
-    for task in (alert_task, purge_task):
+    for task in (alert_task, purge_task, interlock_task):
         task.cancel()
         try:
             await task
