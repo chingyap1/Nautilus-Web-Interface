@@ -146,7 +146,15 @@ def test_interlock_engage_notifies_admins(client, monkeypatch):
     assert sent[0]["url"] == "/m/controls"
     assert "drill" in sent[0]["body"]
 
-    client.post("/api/supervision/interlock/resume", json={"reason": "all clear"})
+    import time
+
+    from step_up import _totp_code
+
+    code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+    client.post(
+        "/api/supervision/interlock/resume",
+        json={"reason": "all clear", "step_up_code": code},
+    )
     assert sent[-1]["roles"] == ("operator", "approver", "admin")
 
 

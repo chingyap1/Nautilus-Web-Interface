@@ -31,6 +31,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from routers.supervision import _resume_precondition_failure as _real_resume_preconditions  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,6 +94,78 @@ def _make_critical_log_dir(tmp_path: Path) -> Path:
         "2026-01-15T11:00:00+00:00,SELL,0.001,96000.0,USD,0.13\n"
     )
     return log_dir
+
+
+@pytest.mark.parametrize(
+    ("agents", "expected"),
+    [
+        ([], "agent_unavailable"),
+        (
+            [
+                {
+                    "agent_id": "other-agent",
+                    "freshness": "online",
+                    "reconciled": True,
+                    "kill_switch": False,
+                }
+            ],
+            "agent_unavailable",
+        ),
+        ([{"agent_id": "agent-btc", "freshness": "stale"}], "agent_offline"),
+        (
+            [
+                {
+                    "agent_id": "agent-btc",
+                    "freshness": "online",
+                    "execution_mode": "paper",
+                    "reconciled": False,
+                }
+            ],
+            "account_not_reconciled",
+        ),
+        (
+            [
+                {
+                    "agent_id": "agent-btc",
+                    "freshness": "online",
+                    "execution_mode": "live",
+                    "reconciled": True,
+                    "kill_switch": False,
+                }
+            ],
+            "execution_mode_not_paper",
+        ),
+        (
+            [
+                {
+                    "agent_id": "agent-btc",
+                    "freshness": "online",
+                    "execution_mode": "paper",
+                    "reconciled": True,
+                }
+            ],
+            "kill_switch_active",
+        ),
+        (
+            [
+                {
+                    "agent_id": "agent-btc",
+                    "freshness": "online",
+                    "execution_mode": "paper",
+                    "reconciled": True,
+                    "kill_switch": False,
+                }
+            ],
+            None,
+        ),
+    ],
+)
+def test_resume_preconditions_fail_closed(agents, expected, monkeypatch):
+    from routers import system
+
+    monkeypatch.setattr(system, "_load_agent_heartbeats", lambda: agents)
+
+    assert _real_resume_preconditions() == expected
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +274,13 @@ def reset_step_up():
     verifier.set_secret("admin", "JBSWY3DPEHPK3PXP")
     set_step_up_verifier(verifier)
     yield
+
+
+@pytest.fixture(autouse=True)
+def healthy_resume_preconditions(monkeypatch):
+    from routers import supervision
+
+    monkeypatch.setattr(supervision, "_resume_precondition_failure", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -457,6 +538,59 @@ class TestInterlockResume:
         r = client.post("/api/supervision/interlock/resume", json={"step_up_code": code})
         assert r.status_code == 200
         assert r.json()["state"] == "resumed"
+
+    def test_resume_rejects_failed_agent_precondition(self, client, monkeypatch):
+        from routers import supervision
+        from step_up import _totp_code
+
+        client.post("/api/supervision/interlock/engage", json={"reason": "stop"})
+        monkeypatch.setattr(
+            supervision,
+            "_resume_precondition_failure",
+            lambda: "account_not_reconciled",
+        )
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+
+        r = client.post(
+            "/api/supervision/interlock/resume",
+            json={"reason": "all clear", "step_up_code": code},
+        )
+
+        assert r.status_code == 409
+        assert r.json()["detail"] == {
+            "reason": "resume_precondition_failed",
+            "check": "account_not_reconciled",
+        }
+
+    def test_concurrent_engage_wins_over_in_flight_resume(self, client, monkeypatch):
+        from routers import supervision
+        from state import mcp_adapter
+        from step_up import _totp_code
+
+        client.post("/api/supervision/interlock/engage", json={"reason": "initial pause"})
+
+        def engage_during_checks():
+            mcp_adapter.engage_interlock(actor="operator", reason="new emergency")
+            return None
+
+        monkeypatch.setattr(
+            supervision,
+            "_resume_precondition_failure",
+            engage_during_checks,
+        )
+        code = _totp_code("JBSWY3DPEHPK3PXP", int(time.time()))
+
+        r = client.post(
+            "/api/supervision/interlock/resume",
+            json={"reason": "older resume", "step_up_code": code},
+        )
+
+        assert r.status_code == 409
+        assert r.json()["detail"]["reason"] == "interlock_changed"
+        record = mcp_adapter.interlock_record()
+        assert record is not None
+        assert record.state.value == "paused"
+        assert record.reason == "new emergency"
 
 
 # ---------------------------------------------------------------------------

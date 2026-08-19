@@ -63,6 +63,13 @@ def isolated_database(tmp_path, monkeypatch):
     monkeypatch.setattr(stores, "DB_PATH", path)
     asyncio.run(stores.init_stores_db())
 
+    # Most API tests exercise authorization/state transitions independently
+    # of a running agent. Dedicated supervision tests cover fail-closed resume
+    # preconditions explicitly.
+    from routers import supervision
+
+    monkeypatch.setattr(supervision, "_resume_precondition_failure", lambda: None)
+
 
 @pytest.fixture(autouse=True)
 def reset_live_manager():

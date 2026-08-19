@@ -152,6 +152,7 @@ class TestDispatchCreatesDurableCommand:
         assert cmd["proposal_id"] == pid
         assert cmd["approval_id"] == aid
         assert cmd["status"] == "VALIDATED"
+        assert cmd["client_order_id"] == "O-12345"
 
     def test_dispatch_high_risk_creates_command(self, client):
         """HIGH-risk (flatten) dispatch with step-up creates a command."""
@@ -175,6 +176,21 @@ class TestDispatchCreatesDurableCommand:
         assert cmd["origin"] == "supervisor"
         assert cmd["command_type"] == "flatten"
         assert cmd["instrument"] == "BTC/USD.KRAKEN"
+
+    def test_dispatch_rejects_live_execution_mode(self, client, monkeypatch):
+        monkeypatch.setenv("EXECUTION_MODE", "live")
+        pid = _create_proposal(
+            command_name="cancel_order",
+            payload={"client_order_id": "O-PAPER-ONLY"},
+        )
+        approved = client.post("/api/mcp/approvals", json={"proposal_id": pid})
+
+        response = client.post(
+            f"/api/mcp/approvals/{approved.json()['approval_id']}/dispatch"
+        )
+
+        assert response.status_code == 409
+        assert "paper_only" in str(response.json())
 
     def test_dispatch_start_strategy_creates_command(self, client):
         """MEDIUM-risk (start_strategy) dispatch creates a command."""

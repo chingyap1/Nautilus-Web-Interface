@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import os
@@ -54,27 +55,39 @@ def _parse_timestamp(value: Any) -> Optional[datetime]:
 
 
 def _load_agent_heartbeats() -> list[Dict[str, Any]]:
-    """Read agent-authored heartbeats from the shared log volume.
+    """Read agent-authored heartbeats from the configured storage backend.
 
     This is deliberately read-only: the API reports execution-agent state but
     cannot mutate it or communicate with a venue.
     """
-    log_dir = Path(os.environ.get("LOG_DIR", "logs"))
-    now = _utc_now()
+    from live.storage import get_backend
+
     agents: list[Dict[str, Any]] = []
 
-    for heartbeat_path in sorted(log_dir.glob("heartbeat_*.json")):
+    try:
+        backend = get_backend(log_dir=os.environ.get("LOG_DIR", "logs"))
+        heartbeat_keys = backend.list_keys("heartbeat_", suffix=".json")
+    except Exception:
+        return []
+
+    for heartbeat_key in heartbeat_keys:
         try:
-            heartbeat = json.loads(heartbeat_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            content = backend.read_text(heartbeat_key)
+            heartbeat = json.loads(content) if content else None
+        except Exception:
+            # Storage failure is absence of authoritative state, never online.
+            continue
+        if not isinstance(heartbeat, dict):
             continue
 
         last_heartbeat = _parse_timestamp(heartbeat.get("last_heartbeat"))
         age_seconds = (
-            max(0, int((now - last_heartbeat).total_seconds()))
+            int((_utc_now() - last_heartbeat).total_seconds())
             if last_heartbeat is not None
             else None
         )
+        if age_seconds is not None and age_seconds < 0:
+            age_seconds = None
         heartbeat["heartbeat_age_seconds"] = age_seconds
         heartbeat["freshness"] = (
             "online"
@@ -176,7 +189,7 @@ async def get_engine_info():
 @router.get("/operations/snapshot")
 async def get_operations_snapshot():
     """Return an operator view of agent authority and durable command flow."""
-    agents = _load_agent_heartbeats()
+    agents = await asyncio.to_thread(_load_agent_heartbeats)
     execution_modes = {
         str(agent.get("execution_mode", "paper")).strip().lower() for agent in agents
     }

@@ -22,11 +22,26 @@ class FakeChannel:
     def publish(self, command: dict) -> None:
         self.published.append(command)
 
+    def result_ids(self) -> list[str]:
+        return list(self.results.keys())
+
     def read_result(self, command_id: str, *, consume: bool = False):
         result = self.results.get(command_id)
         if result and consume:
             del self.results[command_id]
         return result
+
+    def has_in_flight(self, command_id: str) -> bool:
+        return any(item["command_id"] == command_id for item in self.published)
+
+    def clear_processing(self, command_id: str) -> None:
+        pass
+
+    def cancel_pending(self, command_id: str) -> bool:
+        self.published = [
+            item for item in self.published if item["command_id"] != command_id
+        ]
+        return True
 
 
 @pytest.fixture
@@ -68,6 +83,7 @@ async def test_validated_command_is_published_once(validated_command):
 async def test_agent_result_sets_submitted_and_order_ids(validated_command):
     channel = FakeChannel()
     channel.results[validated_command["command_id"]] = {
+        "command_id": validated_command["command_id"],
         "status": "SUBMITTED",
         "client_order_id": "O-19700101-000000-001-001-1",
     }
@@ -82,6 +98,7 @@ async def test_agent_result_sets_submitted_and_order_ids(validated_command):
 async def test_agent_rejection_is_terminal(validated_command):
     channel = FakeChannel()
     channel.results[validated_command["command_id"]] = {
+        "command_id": validated_command["command_id"],
         "status": "REJECTED",
         "error_message": "Account reconciliation not yet complete",
     }

@@ -8,7 +8,7 @@ Run with:
 
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -109,6 +109,78 @@ def test_operations_snapshot_reports_agent_authority(client, tmp_path, monkeypat
     assert body["agents"][0]["source"] == "nautilus_agent"
     assert body["agents"][0]["balance_usd"] == 100123.45
     assert body["command_pipeline"]["pending_files"] == 1
+
+
+def test_load_agent_heartbeats_uses_configured_storage_backend(monkeypatch):
+    from live import storage
+    from routers import system
+
+    heartbeat = {
+        "agent_id": "agent-btc",
+        "pair": "XBTUSD",
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
+        "execution_mode": "paper",
+        "reconciled": True,
+        "kill_switch": False,
+    }
+
+    class FakeBackend:
+        def list_keys(self, prefix, suffix=""):
+            assert (prefix, suffix) == ("heartbeat_", ".json")
+            return ["heartbeat_XBTUSD.json"]
+
+        def read_text(self, key):
+            assert key == "heartbeat_XBTUSD.json"
+            return json.dumps(heartbeat)
+
+    monkeypatch.setattr(storage, "get_backend", lambda log_dir=None: FakeBackend())
+
+    agents = system._load_agent_heartbeats()
+
+    assert agents[0]["freshness"] == "online"
+    assert agents[0]["reconciled"] is True
+
+
+def test_load_agent_heartbeats_fails_closed_on_storage_read_error(monkeypatch):
+    from live import storage
+    from routers import system
+
+    class BrokenBackend:
+        def list_keys(self, prefix, suffix=""):
+            return ["heartbeat_XBTUSD.json"]
+
+        def read_text(self, key):
+            raise RuntimeError("GCS unavailable")
+
+    monkeypatch.setattr(storage, "get_backend", lambda log_dir=None: BrokenBackend())
+
+    assert system._load_agent_heartbeats() == []
+
+
+def test_load_agent_heartbeats_rejects_future_timestamp(monkeypatch):
+    from live import storage
+    from routers import system
+
+    future = datetime.now(timezone.utc) + timedelta(minutes=5)
+
+    class FutureBackend:
+        def list_keys(self, prefix, suffix=""):
+            return ["heartbeat_XBTUSD.json"]
+
+        def read_text(self, key):
+            return json.dumps(
+                {
+                    "agent_id": "agent-btc",
+                    "pair": "XBTUSD",
+                    "last_heartbeat": future.isoformat(),
+                }
+            )
+
+    monkeypatch.setattr(storage, "get_backend", lambda log_dir=None: FutureBackend())
+
+    heartbeat = system._load_agent_heartbeats()[0]
+    assert heartbeat["freshness"] == "stale"
+    assert heartbeat["heartbeat_age_seconds"] is None
 
 
 def test_system_metrics(client):

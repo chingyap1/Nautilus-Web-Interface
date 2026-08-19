@@ -217,8 +217,9 @@ class MCPAdapter:
         # Check interlock state
         record = asyncio_run(self._interlock.get())
         if record:
+            effective_state = evaluate_interlock(record, now=datetime.now(UTC))
             resources["interlock"] = {
-                "state": record.state.value,
+                "state": effective_state.value,
                 "updated_at": record.updated_at,
                 "lease_seconds": record.lease_seconds,
             }
@@ -431,6 +432,30 @@ class MCPAdapter:
         )
         return record
 
+    def resume_interlock_if_unchanged(
+        self,
+        *,
+        actor: str,
+        reason: str,
+        expected_updated_at: str | None,
+    ) -> InterlockRecord:
+        """Resume only if no newer interlock action superseded the request."""
+        record = asyncio_run(
+            self._interlock.resume_if_unchanged(
+                actor=actor,
+                reason=reason,
+                expected_updated_at=expected_updated_at,
+            )
+        )
+        if record is None:
+            raise InterlockChangedError("Interlock changed while resume checks were running")
+        self._audit.record(
+            "interlock_resume",
+            actor=actor,
+            reason=reason,
+        )
+        return record
+
     def interlock_state(self) -> InterlockState:
         """Return the effective interlock state (fail-closed, D5)."""
         record = asyncio_run(self._interlock.get())
@@ -456,6 +481,10 @@ class UnknownCommandError(Exception):
 
 class DispatchError(Exception):
     """Raised when dispatch fails closed (approval invalid, replayed, etc.)."""
+
+
+class InterlockChangedError(Exception):
+    """Raised when a concurrent interlock action supersedes a resume request."""
 
 
 # ---------------------------------------------------------------------------
