@@ -12,6 +12,7 @@ caller.  See the revalidation table in ``docs/mcp_dispatch_bridge_plan.md``.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import UTC, datetime
 from typing import Any
 
@@ -72,6 +73,8 @@ async def persist(
         raise DispatchBridgeError(
             "unknown_command", proposal_id=proposal.proposal_id
         )
+    if definition.paper_only and os.environ.get("EXECUTION_MODE", "paper").lower() != "paper":
+        raise DispatchBridgeError("paper_only", proposal_id=proposal.proposal_id)
 
     # 3. Payload must validate against the catalog schema (lightweight check)
     _validate_payload(definition.request_schema, proposal.payload)
@@ -110,6 +113,8 @@ async def persist(
         origin="supervisor",
         proposal_id=proposal.proposal_id,
         approval_id=approval.approval_id,
+        client_order_id=payload.get("client_order_id"),
+        target_agent_id=proposal.target_agent_id,
     )
 
     # Advance to VALIDATED so the CommandProcessor publishes it

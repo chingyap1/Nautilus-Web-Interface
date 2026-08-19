@@ -43,3 +43,44 @@ def test_paused_and_missing_state_are_not_renewed(store: InterlockStore) -> None
 
     assert asyncio.run(store.renew_if_fresh(now=datetime.now(UTC))) is None
     assert asyncio.run(store.get()).state == InterlockState.PAUSED
+
+
+def test_resume_if_unchanged_rejects_newer_engage(store: InterlockStore) -> None:
+    observed = asyncio.run(store.engage(actor="operator", reason="initial"))
+    asyncio.run(store.engage(actor="operator", reason="new emergency"))
+
+    resumed = asyncio.run(
+        store.resume_if_unchanged(
+            actor="admin",
+            reason="stale resume",
+            expected_updated_at=observed.updated_at,
+        )
+    )
+
+    assert resumed is None
+    current = asyncio.run(store.get())
+    assert current is not None
+    assert current.state == InterlockState.PAUSED
+    assert current.reason == "new emergency"
+
+
+def test_engage_and_resume_restore_canonical_lease(store: InterlockStore) -> None:
+    import aiosqlite
+    import stores
+
+    asyncio.run(store.engage(actor="operator", reason="initial"))
+
+    async def corrupt_lease() -> None:
+        async with aiosqlite.connect(stores.DB_PATH) as db:
+            await db.execute("UPDATE interlock SET lease_seconds=999 WHERE id=1")
+            await db.commit()
+
+    asyncio.run(corrupt_lease())
+    paused = asyncio.run(store.engage(actor="operator", reason="reset"))
+    assert paused.lease_seconds == 30.0
+    assert asyncio.run(store.get()).lease_seconds == 30.0
+
+    asyncio.run(corrupt_lease())
+    resumed = asyncio.run(store.resume(actor="admin", reason="reset"))
+    assert resumed.lease_seconds == 30.0
+    assert asyncio.run(store.get()).lease_seconds == 30.0

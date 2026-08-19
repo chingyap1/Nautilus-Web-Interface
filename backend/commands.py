@@ -131,7 +131,8 @@ async def init_commands_db() -> None:
                 created_at      TEXT NOT NULL,
                 origin          TEXT DEFAULT 'human',
                 proposal_id     TEXT,
-                approval_id     TEXT
+                approval_id     TEXT,
+                target_agent_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS events (
@@ -150,6 +151,10 @@ async def init_commands_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_commands_idem    ON commands(idempotency_key);
             """
         )
+        try:
+            await db.execute("ALTER TABLE commands ADD COLUMN target_agent_id TEXT")
+        except aiosqlite.OperationalError:
+            pass
         await db.commit()
 
 
@@ -171,6 +176,8 @@ async def create_command(
     origin: str = "human",
     proposal_id: Optional[str] = None,
     approval_id: Optional[str] = None,
+    client_order_id: Optional[str] = None,
+    target_agent_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Create a new durable command record with PENDING status."""
     command_id = str(uuid.uuid4())
@@ -188,7 +195,7 @@ async def create_command(
         "strategy_id": strategy_id,
         "account": account,
         "idempotency_key": idempotency_key or command_id,
-        "client_order_id": None,
+        "client_order_id": client_order_id,
         "venue_order_id": None,
         "error_message": None,
         "submitted_at": None,
@@ -197,6 +204,7 @@ async def create_command(
         "origin": origin,
         "proposal_id": proposal_id,
         "approval_id": approval_id,
+        "target_agent_id": target_agent_id,
     }
 
     async with aiosqlite.connect(DB_PATH) as db:
@@ -207,8 +215,8 @@ async def create_command(
                  quantity, price, strategy_id, account, idempotency_key,
                  client_order_id, venue_order_id, error_message,
                  submitted_at, completed_at, created_at,
-                 origin, proposal_id, approval_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 origin, proposal_id, approval_id, target_agent_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 command["command_id"], command["command_type"], command["status"],
@@ -219,6 +227,7 @@ async def create_command(
                 command["error_message"], command["submitted_at"],
                 command["completed_at"], command["created_at"],
                 command["origin"], command["proposal_id"], command["approval_id"],
+                command["target_agent_id"],
             ),
         )
         await db.commit()

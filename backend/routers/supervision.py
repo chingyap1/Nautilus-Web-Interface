@@ -11,6 +11,7 @@ flow.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -21,13 +22,42 @@ from pydantic import BaseModel
 
 import push_notify
 from auth_jwt import get_current_user, require_admin, require_operator
-from mcp_adapter import InterlockPausedError, UnknownCommandError
+from command_processor import get_processor
+from mcp_adapter import InterlockChangedError, InterlockPausedError, UnknownCommandError
 from state import mcp_adapter
 from step_up import get_step_up_verifier
 from supervision.bridge import SupervisionBridge
 from supervision.health import AgentOffline
 
 router = APIRouter(prefix="/api/supervision", tags=["supervision"])
+
+
+def _resume_precondition_failure() -> str | None:
+    """Return the first fail-closed agent precondition preventing resume."""
+    from routers.system import _load_agent_heartbeats
+
+    agents = _load_agent_heartbeats()
+    expected_ids = {
+        agent_id.strip()
+        for agent_id in os.environ.get("EXPECTED_AGENT_IDS", "agent-btc").split(",")
+        if agent_id.strip()
+    }
+    agents_by_id = {
+        str(agent.get("agent_id")): agent for agent in agents if agent.get("agent_id")
+    }
+    if not expected_ids or not expected_ids.issubset(agents_by_id):
+        return "agent_unavailable"
+    expected_agents = [agents_by_id[agent_id] for agent_id in sorted(expected_ids)]
+    if any(agent.get("freshness") != "online" for agent in expected_agents):
+        return "agent_offline"
+    if any(agent.get("execution_mode") != "paper" for agent in expected_agents):
+        return "execution_mode_not_paper"
+    if any(agent.get("reconciled") is not True for agent in expected_agents):
+        return "account_not_reconciled"
+    if any(agent.get("kill_switch") is not False for agent in expected_agents):
+        return "kill_switch_active"
+    return None
+
 
 # Shared bridge instance — uses the singleton MCPAdapter from state.py.
 _bridge = SupervisionBridge(mcp_adapter)
@@ -159,6 +189,7 @@ async def engage_interlock(
         actor=_user.get("sub", _user.get("username", "unknown")),
         reason=body.reason,
     )
+    cancelled_command_ids = await get_processor().cancel_unclaimed_supervisor_commands()
     # Only an admin can resume, so they are the ones who need to see this.
     await push_notify.notify_roles(
         ("admin",),
@@ -172,6 +203,7 @@ async def engage_interlock(
         "actor": record.actor,
         "reason": record.reason,
         "updated_at": record.updated_at,
+        "cancelled_command_ids": cancelled_command_ids,
     }
 
 
@@ -188,17 +220,41 @@ async def resume_interlock(
             if not verifier.verify(principal, body.step_up_code):
                 raise HTTPException(
                     status_code=403,
-                    detail={"reason": "step_up_required", "message": "Invalid or expired step-up code"},
+                    detail={
+                        "reason": "step_up_required",
+                        "message": "Invalid or expired step-up code",
+                    },
                 )
         else:
             raise HTTPException(
                 status_code=403,
-                detail={"reason": "step_up_required", "message": "Step-up authentication required to resume the interlock"},
+                detail={
+                    "reason": "step_up_required",
+                    "message": "Step-up authentication required to resume the interlock",
+                },
             )
-    record = mcp_adapter.resume_interlock(
-        actor=principal,
-        reason=body.reason,
-    )
+    observed = mcp_adapter.interlock_record()
+    expected_updated_at = observed.updated_at if observed else None
+    precondition_failure = await asyncio.to_thread(_resume_precondition_failure)
+    if precondition_failure is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "reason": "resume_precondition_failed",
+                "check": precondition_failure,
+            },
+        )
+    try:
+        record = mcp_adapter.resume_interlock_if_unchanged(
+            actor=principal,
+            reason=body.reason,
+            expected_updated_at=expected_updated_at,
+        )
+    except InterlockChangedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"reason": "interlock_changed", "message": str(exc)},
+        ) from exc
     await push_notify.notify_roles(
         ("operator", "approver", "admin"),
         title="Supervisor commands resumed",

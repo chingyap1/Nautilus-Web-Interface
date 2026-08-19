@@ -296,7 +296,8 @@ async def init_db() -> None:
                 created_at      TEXT NOT NULL,
                 origin          TEXT DEFAULT 'human',
                 proposal_id     TEXT,
-                approval_id     TEXT
+                approval_id     TEXT,
+                target_agent_id TEXT
             );
 
             CREATE TABLE IF NOT EXISTS events (
@@ -322,6 +323,7 @@ async def init_db() -> None:
             "ALTER TABLE commands ADD COLUMN origin TEXT DEFAULT 'human'",
             "ALTER TABLE commands ADD COLUMN proposal_id TEXT",
             "ALTER TABLE commands ADD COLUMN approval_id TEXT",
+            "ALTER TABLE commands ADD COLUMN target_agent_id TEXT",
         ]:
             try:
                 await cmd_db.execute(migration)

@@ -450,7 +450,8 @@ class InterlockStore:
                        VALUES (1, 'paused', ?, ?, ?, 30.0)
                        ON CONFLICT(id) DO UPDATE SET
                            state='paused', actor=excluded.actor,
-                           reason=excluded.reason, updated_at=excluded.updated_at""",
+                           reason=excluded.reason, updated_at=excluded.updated_at,
+                           lease_seconds=excluded.lease_seconds""",
                     (actor, reason, now_iso),
                 )
                 await db.execute(
@@ -483,9 +484,61 @@ class InterlockStore:
                        VALUES (1, 'resumed', ?, ?, ?, 30.0)
                        ON CONFLICT(id) DO UPDATE SET
                            state='resumed', actor=excluded.actor,
-                           reason=excluded.reason, updated_at=excluded.updated_at""",
+                           reason=excluded.reason, updated_at=excluded.updated_at,
+                           lease_seconds=excluded.lease_seconds""",
                     (actor, reason, now_iso),
                 )
+                await db.commit()
+            except Exception:
+                await db.execute("ROLLBACK")
+                raise
+        return InterlockRecord(
+            state=InterlockState.RESUMED,
+            actor=actor,
+            reason=reason,
+            updated_at=now_iso,
+            lease_seconds=INTERLOCK_LEASE_SECONDS,
+        )
+
+    async def resume_if_unchanged(
+        self,
+        *,
+        actor: str,
+        reason: str,
+        expected_updated_at: str | None,
+    ) -> InterlockRecord | None:
+        """Resume only if no engage/renewal changed the observed durable row."""
+        now_iso = _now_iso()
+        async with aiosqlite.connect(DB_PATH) as db:
+            db.row_factory = aiosqlite.Row
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                async with db.execute("SELECT updated_at FROM interlock WHERE id=1") as cur:
+                    row = await cur.fetchone()
+                current_updated_at = row["updated_at"] if row else None
+                if current_updated_at != expected_updated_at:
+                    await db.commit()
+                    return None
+                if row:
+                    await db.execute(
+                        """UPDATE interlock
+                           SET state='resumed', actor=?, reason=?, updated_at=?, lease_seconds=?
+                           WHERE id=1 AND updated_at=?""",
+                        (
+                            actor,
+                            reason,
+                            now_iso,
+                            INTERLOCK_LEASE_SECONDS,
+                            expected_updated_at,
+                        ),
+                    )
+                else:
+                    await db.execute(
+                        """INSERT INTO interlock
+                           (id, state, actor, reason, updated_at, lease_seconds)
+                           VALUES (1, 'resumed', ?, ?, ?, ?)""",
+                        (actor, reason, now_iso, INTERLOCK_LEASE_SECONDS),
+                    )
                 await db.commit()
             except Exception:
                 await db.execute("ROLLBACK")
