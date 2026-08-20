@@ -17,15 +17,15 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, HTTPException
-from pydantic import BaseModel
-
 import push_notify
 from auth_jwt import get_current_user, require_admin, require_operator
 from command_processor import get_processor
+from fastapi import APIRouter, Body, Depends, HTTPException
 from mcp_adapter import InterlockChangedError, InterlockPausedError, UnknownCommandError
+from pydantic import BaseModel
 from state import mcp_adapter
 from step_up import get_step_up_verifier
+
 from supervision.bridge import SupervisionBridge
 from supervision.health import AgentOffline
 
@@ -212,27 +212,31 @@ async def resume_interlock(
     body: InterlockResumeRequest = Body(default=InterlockResumeRequest()),
     user: dict = Depends(require_admin),
 ) -> dict[str, Any]:
-    """Resume the interlock. Requires admin role + step-up (D6.6)."""
+    """Resume the interlock. Requires admin role + step-up (D6.6).
+
+    Always calls ``verifier.verify()`` so that every resume is independently
+    verified — the 5-minute elevation window grants convenience for sequential
+    approvals but must **not** shortcut this high-risk action (D6.6).
+    """
     principal = user.get("sub", user.get("username", "unknown"))
     verifier = get_step_up_verifier()
-    if not verifier.is_elevated(principal):
-        if body.step_up_code:
-            if not verifier.verify(principal, body.step_up_code):
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "reason": "step_up_required",
-                        "message": "Invalid or expired step-up code",
-                    },
-                )
-        else:
+    if body.step_up_code:
+        if not verifier.verify(principal, body.step_up_code):
             raise HTTPException(
                 status_code=403,
                 detail={
                     "reason": "step_up_required",
-                    "message": "Step-up authentication required to resume the interlock",
+                    "message": "Invalid or expired step-up code",
                 },
             )
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "reason": "step_up_required",
+                "message": "Step-up authentication required to resume the interlock",
+            },
+        )
     observed = mcp_adapter.interlock_record()
     expected_updated_at = observed.updated_at if observed else None
     precondition_failure = await asyncio.to_thread(_resume_precondition_failure)
