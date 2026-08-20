@@ -592,6 +592,45 @@ class TestInterlockResume:
         assert record.state.value == "paused"
         assert record.reason == "new emergency"
 
+    def test_resume_requires_step_up_even_when_elevated(self, client):
+        """Resume must always call verify() regardless of active elevation
+        window.  Prior elevation from another action (e.g. approving a proposal)
+        does **not** shortcut step-up enforcement (D6.6)."""
+        from step_up import TOTP_PERIOD, _totp_code, get_step_up_verifier
+
+        # Engage interlock so the subsequent resume is meaningful
+        client.post("/api/supervision/interlock/engage", json={"reason": "stop"})
+
+        # Simulate an admin that already has a 5-minute elevation from a prior
+        # step-up action (e.g. approving a HIGH-risk proposal).
+        now = int(time.time())
+        code = _totp_code("JBSWY3DPEHPK3PXP", now)
+        r_first = client.post(
+            "/api/supervision/interlock/resume",
+            json={"reason": "elevating first", "step_up_code": code},
+        )
+        assert r_first.status_code == 200
+
+        verifier = get_step_up_verifier()
+        assert verifier.is_elevated("admin")
+
+        # Resume *without* step-up while elevated → must still require code.
+        r_no_code = client.post("/api/supervision/interlock/resume", json={"reason": "no code"})
+        assert r_no_code.status_code == 403
+        assert r_no_code.json()["detail"]["reason"] == "step_up_required"
+
+        # Resume *with* step-up → succeeds and refreshes the elevation window.
+        # Use a code from the next TOTP window so it differs from `code` above —
+        # replay protection would otherwise reject a reused code, and both calls
+        # can land in the same 30s window when the test runs fast.
+        code2 = _totp_code("JBSWY3DPEHPK3PXP", now + TOTP_PERIOD)
+        r_with_code = client.post(
+            "/api/supervision/interlock/resume",
+            json={"reason": "second resume with step-up", "step_up_code": code2},
+        )
+        assert r_with_code.status_code == 200
+        assert r_with_code.json()["state"] == "resumed"
+
 
 # ---------------------------------------------------------------------------
 # 5. GET /api/supervision/proposals
