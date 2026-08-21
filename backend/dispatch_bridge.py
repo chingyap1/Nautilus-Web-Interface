@@ -13,12 +13,19 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import commands
 from stores import InterlockStore
 
+ROOT = Path(__file__).resolve().parents[3]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from live.command_channel import FileCommandChannel
 from mcp_gateway.approvals import hash_payload
 from mcp_gateway.catalog import get_command
 from mcp_gateway.interlock import evaluate_interlock
@@ -42,6 +49,7 @@ async def persist(
     approval: CommandApproval,
     dispatch_id: str,
     interlock_store: InterlockStore | None = None,
+    channel: FileCommandChannel | None = None,
 ) -> dict[str, Any]:
     """Revalidate and create a durable command record for an approved proposal.
 
@@ -49,6 +57,15 @@ async def persist(
     set the proposal to ``DISPATCHED``.  If this function rejects, the approval
     is already spent — the caller must return HTTP 409 and require a fresh
     proposal + approval to retry.
+
+    Publishes the command to the ``FileCommandChannel`` synchronously, in the
+    same request, rather than leaving it to ``CommandProcessor``'s background
+    poll loop. That loop runs inside this same process — if NWI crashes
+    between the DB write and the loop's next tick, a command that was never
+    published is invisible to the agent forever, even though the API already
+    returned 200. Publishing here closes that window; the poll loop's own
+    ``publish()`` call becomes a no-op retry (it checks ``has_in_flight``
+    first) rather than the only path.
 
     Returns the created command dict (with ``command_id``).
     Raises ``DispatchBridgeError`` on any revalidation failure.
@@ -117,11 +134,13 @@ async def persist(
         target_agent_id=proposal.target_agent_id,
     )
 
-    # Advance to VALIDATED so the CommandProcessor publishes it
+    # Advance to VALIDATED, then publish to the file channel immediately —
+    # don't rely solely on CommandProcessor's next poll tick (see docstring).
     await commands.update_command_status(
         command["command_id"], commands.CommandStatus.VALIDATED
     )
     command["status"] = commands.CommandStatus.VALIDATED.value
+    (channel or FileCommandChannel()).publish(command)
 
     logger.info(
         "Dispatch bridge: created command %s for proposal %s (origin=supervisor)",
