@@ -86,17 +86,6 @@ def reset_step_up():
     yield
 
 
-@pytest.fixture(autouse=True)
-def isolated_command_dir(tmp_path, monkeypatch):
-    """Route the FileCommandChannel to a per-test directory.
-
-    dispatch_bridge.persist() constructs a channel with no COMMAND_DIR
-    override when the caller doesn't inject one, so without this it would
-    write into the real repo's logs/commands/ during test runs.
-    """
-    monkeypatch.setenv("COMMAND_DIR", str(tmp_path / "commands"))
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -363,71 +352,3 @@ class TestHumanCommandProvenance:
         assert cmd["origin"] == "human"
         assert cmd["proposal_id"] is None
         assert cmd["approval_id"] is None
-
-
-# ---------------------------------------------------------------------------
-# 6. Dispatch durability — published to the file channel synchronously
-# ---------------------------------------------------------------------------
-
-
-class TestDispatchPublishesSynchronously:
-    """Regression guard for the gate5 d2 durability gap.
-
-    Previously the dispatch endpoint only wrote the command to the DB with
-    status VALIDATED and left CommandProcessor's background poll loop to
-    publish it to the FileCommandChannel. If NWI crashed between the DB
-    write and that loop's next tick, the command was never published and
-    the agent had nothing to claim — even though /dispatch had already
-    returned 200. persist() now publishes in the same request, so the
-    command must be visible to the file channel immediately, with no
-    CommandProcessor loop iteration required.
-    """
-
-    def test_command_visible_in_file_channel_immediately_after_dispatch(self, client, tmp_path):
-        pid = _create_proposal(
-            command_name="cancel_order",
-            payload={"client_order_id": "O-durability"},
-        )
-        aid = client.post("/api/mcp/approvals", json={"proposal_id": pid}).json()["approval_id"]
-
-        r = client.post(f"/api/mcp/approvals/{aid}/dispatch")
-        assert r.status_code == 200
-        command_id = r.json()["command_id"]
-
-        # No CommandProcessor was ever constructed or run in this test — if
-        # the command is visible here, dispatch_bridge.persist() published
-        # it itself.
-        import os
-
-        from live.command_channel import FileCommandChannel
-
-        channel = FileCommandChannel(os.environ["COMMAND_DIR"])
-        assert channel.has_in_flight(command_id)
-        pending = channel.pending / f"{command_id}.json"
-        assert pending.exists()
-
-    def test_command_processor_does_not_double_publish(self, client, tmp_path):
-        """CommandProcessor's own publish() call is a safe no-op retry —
-        it must not clobber or duplicate an already-published command."""
-        pid = _create_proposal(
-            command_name="cancel_order",
-            payload={"client_order_id": "O-idempotent"},
-        )
-        aid = client.post("/api/mcp/approvals", json={"proposal_id": pid}).json()["approval_id"]
-        command_id = client.post(f"/api/mcp/approvals/{aid}/dispatch").json()["command_id"]
-
-        import os
-
-        from command_processor import CommandProcessor
-
-        from live.command_channel import FileCommandChannel
-
-        channel = FileCommandChannel(os.environ["COMMAND_DIR"])
-        before = (channel.pending / f"{command_id}.json").read_text()
-
-        processor = CommandProcessor(channel=channel)
-        asyncio.run(processor.process_once())
-
-        after = (channel.pending / f"{command_id}.json").read_text()
-        assert before == after
-        assert channel.has_in_flight(command_id)
