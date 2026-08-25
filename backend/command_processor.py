@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -17,6 +18,8 @@ from live.command_channel import FileCommandChannel
 from mcp_gateway.interlock import evaluate_interlock
 from mcp_gateway.models import InterlockState
 from stores import InterlockStore
+
+logger = logging.getLogger("command_processor")
 
 
 class CommandProcessor:
@@ -55,7 +58,11 @@ class CommandProcessor:
             except Exception as exc:
                 # A malformed artifact or transient database failure must not
                 # permanently stop command routing while the API stays healthy.
-                print(f"[commands] Reconciliation failed: {exc}", file=sys.stderr)
+                # Log at ERROR so it's visible in structured logs, not buried
+                # in stderr prints. A PermissionError here means the command
+                # directory is not writable by this process — the same root
+                # cause as the PR #22 dispatch 500 regression.
+                logger.error("Reconciliation failed: %s", exc, exc_info=True)
             await asyncio.sleep(self.poll_interval)
 
     async def process_once(self) -> None:
