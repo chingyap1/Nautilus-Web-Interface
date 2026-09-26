@@ -166,6 +166,47 @@ describe('PendingProposalsList', () => {
     });
   });
 
+  it('retains the dispatch result after the pending proposal refreshes away', async () => {
+    localStorage.setItem('nautilus_role', 'approver');
+    vi.mocked(supervisionService.approve).mockResolvedValue({
+      approval_id: 'appr-001',
+      proposal_id: 'prop-001',
+      payload_hash: 'abc',
+      target_agent_id: 'agent-btc',
+      requester: 'supervisor',
+      idempotency_key: 'key-1',
+      approver: 'approver',
+      approved_at: '2026-01-01T10:05:00Z',
+      expires_at: '2026-01-01T10:15:00Z',
+      status: 'active',
+    });
+    vi.mocked(supervisionService.dispatch).mockResolvedValue({
+      dispatch_id: 'disp-001',
+      proposal_id: 'prop-001',
+      approval_id: 'appr-001',
+      command: 'flatten',
+      target_agent_id: 'agent-btc',
+      status: 'dispatched',
+      dispatched_at: '2026-01-01T10:06:00Z',
+    });
+    const { rerender } = render(
+      <PendingProposalsList proposals={[mockProposal]} count={1} loading={false} />,
+    );
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => {
+      expect(screen.getByText('Dispatch now')).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText('Dispatch now'));
+    await waitFor(() => {
+      expect(screen.getByText('Dispatched')).toBeInTheDocument();
+    });
+
+    rerender(<PendingProposalsList proposals={[]} count={0} loading={false} />);
+
+    expect(screen.getByText('Dispatched')).toBeInTheDocument();
+    expect(screen.getByText('disp-001')).toBeInTheDocument();
+  });
+
   it('re-displays payload next to dispatch button', async () => {
     localStorage.setItem('nautilus_role', 'approver');
     vi.mocked(supervisionService.approve).mockResolvedValue({

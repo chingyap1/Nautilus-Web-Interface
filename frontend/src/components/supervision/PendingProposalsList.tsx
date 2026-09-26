@@ -69,6 +69,13 @@ export default function PendingProposalsList({
   const role = localStorage.getItem('nautilus_role');
   const canAct = role === 'approver' || role === 'admin';
   const [actionStates, setActionStates] = useState<Record<string, ProposalActionState>>({});
+  const [retainedProposals, setRetainedProposals] = useState<Record<string, SupervisionProposal>>({});
+  const visibleProposals = [
+    ...proposals,
+    ...Object.values(retainedProposals).filter(
+      (retained) => !proposals.some((proposal) => proposal.proposal_id === retained.proposal_id),
+    ),
+  ];
 
   const updateState = (id: string, patch: Partial<ProposalActionState>) => {
     setActionStates((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -92,11 +99,13 @@ export default function PendingProposalsList({
     }
   };
 
-  const handleDispatch = async (proposalId: string, approvalId: string) => {
+  const handleDispatch = async (proposal: SupervisionProposal, approvalId: string) => {
+    const proposalId = proposal.proposal_id;
     updateState(proposalId, { dispatching: true, error: null });
     try {
       const result = await supervisionService.dispatch(approvalId);
       updateState(proposalId, { dispatching: false, dispatchResult: result });
+      setRetainedProposals((prev) => ({ ...prev, [proposalId]: proposal }));
       onProposalsChanged?.();
     } catch (err) {
       updateState(proposalId, { dispatching: false, error: getErrorMessage(err) });
@@ -131,9 +140,9 @@ export default function PendingProposalsList({
         )}
       </div>
 
-      {loading && proposals.length === 0 ? (
+      {loading && visibleProposals.length === 0 ? (
         <div className="mt-5 py-8 text-center text-sm text-slate-500">Loading proposals…</div>
-      ) : proposals.length === 0 ? (
+      ) : visibleProposals.length === 0 ? (
         <div className="mt-5 rounded-xl border border-dashed border-white/10 px-4 py-8 text-center">
           <p className="text-sm text-slate-400">No supervision proposals awaiting approval</p>
           <p className="mt-1 text-xs text-slate-600">
@@ -142,7 +151,7 @@ export default function PendingProposalsList({
         </div>
       ) : (
         <div className="mt-5 space-y-3">
-          {proposals.map((p) => {
+          {visibleProposals.map((p) => {
             const st = actionStates[p.proposal_id] ?? {};
             const isPending = p.status === 'pending';
             return (
@@ -226,7 +235,7 @@ export default function PendingProposalsList({
                     )}
                     <button
                       type="button"
-                      onClick={() => void handleDispatch(p.proposal_id, st.approval!.approval_id)}
+                      onClick={() => void handleDispatch(p, st.approval!.approval_id)}
                       disabled={st.dispatching}
                       className="mt-2.5 flex items-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-xs font-medium text-rose-200 transition-colors hover:bg-rose-500/20 disabled:cursor-not-allowed disabled:opacity-40"
                     >
