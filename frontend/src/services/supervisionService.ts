@@ -168,7 +168,7 @@ export const supervisionService = {
     api.get<InterlockState>('/api/supervision/interlock'),
   engageInterlock: (reason?: string) =>
     api.post<InterlockActionResponse>('/api/supervision/interlock/engage', { reason }),
-  resumeInterlock: (reason?: string, stepUpCode?: string) =>
+  resumeInterlock: (reason: string | undefined, stepUpCode: string) =>
     api.post<InterlockActionResponse>('/api/supervision/interlock/resume', {
       reason,
       step_up_code: stepUpCode,
