@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import nautilusService, { type Strategy } from '@/services/nautilusService';
 import {
+  formatInterlockResumeError,
   supervisionService,
   type InterlockActionResponse,
   type InterlockState,
@@ -51,6 +52,7 @@ export default function ControlsPage() {
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [strategyId, setStrategyId] = useState('');
   const [reason, setReason] = useState('');
+  const [stepUpCode, setStepUpCode] = useState('');
   const [activePanel, setActivePanel] = useState<ActivePanel>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -91,6 +93,7 @@ export default function ControlsPage() {
   const openPanel = (panel: ActivePanel) => {
     setActivePanel(panel);
     setReason('');
+    setStepUpCode('');
     setActionError(null);
     setActionOk(null);
   };
@@ -98,6 +101,7 @@ export default function ControlsPage() {
   const cancelPanel = () => {
     setActivePanel(null);
     setReason('');
+    setStepUpCode('');
     setActionError(null);
   };
 
@@ -157,18 +161,19 @@ export default function ControlsPage() {
   };
 
   const runResume = async () => {
-    if (!paper || !isAdmin || !reasonReady) return;
+    if (!paper || !isAdmin || !reasonReady || stepUpCode.length !== 6) return;
     setBusy(true);
     setActionError(null);
     try {
-      const resp = await supervisionService.resumeInterlock(reason.trim());
+      const resp = await supervisionService.resumeInterlock(reason.trim(), stepUpCode);
       setLastAction(resp);
       setInterlock({ state: resp.state, actor: resp.actor, reason: resp.reason, updated_at: resp.updated_at });
       setActionOk(`Supervisor commands resumed · ${resp.reason}`);
       setActivePanel(null);
       setReason('');
+      setStepUpCode('');
     } catch (err) {
-      setActionError(getErrorMessage(err));
+      setActionError(formatInterlockResumeError(err));
       void loadInterlock();
     } finally {
       setBusy(false);
@@ -336,8 +341,24 @@ export default function ControlsPage() {
               error={activePanel === 'resume' ? actionError : null}
               confirmLabel="Confirm resume Supervisor"
               onConfirm={() => void runResume()}
-              confirmDisabled={!reasonReady}
-            />
+              confirmDisabled={!reasonReady || stepUpCode.length !== 6}
+            >
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--mops-muted)]">
+                  TOTP step-up code (required)
+                </span>
+                <input
+                  autoComplete="one-time-code"
+                  className="min-h-11 w-full rounded-lg border border-white/10 bg-black/30 px-3 font-mono text-sm tracking-widest text-white placeholder:text-[var(--mops-muted)]"
+                  inputMode="numeric"
+                  maxLength={6}
+                  onChange={(e) => setStepUpCode(e.target.value.replace(/\D/g, ''))}
+                  pattern="[0-9]*"
+                  placeholder="000000"
+                  value={stepUpCode}
+                />
+              </label>
+            </ControlCard>
           ) : null}
 
           {paused && !isAdmin ? (

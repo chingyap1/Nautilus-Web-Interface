@@ -1,4 +1,4 @@
-import api from '@/lib/api';
+import api, { ApiError } from '@/lib/api';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the FastAPI response shapes exactly (docs/supervision_ui_plan.md §3)
@@ -141,6 +141,26 @@ export interface AuditLogResponse {
   count: number;
 }
 
+const RESUME_PRECONDITION_MESSAGES: Record<string, string> = {
+  agent_offline: 'Expected agent heartbeat is offline or stale.',
+  execution_mode_not_paper: 'Expected agent is not running in paper mode.',
+  account_not_reconciled: 'Expected agent account is not reconciled.',
+  kill_switch_active: 'Expected agent kill switch is active.',
+};
+
+export function formatInterlockResumeError(err: unknown): string {
+  if (err instanceof ApiError && typeof err.detail === 'object' && err.detail) {
+    const detail = err.detail as { check?: string; message?: string; reason?: string };
+    if (detail.message) return detail.message;
+    if (detail.reason === 'resume_precondition_failed' && detail.check) {
+      return RESUME_PRECONDITION_MESSAGES[detail.check]
+        ?? `Resume precondition failed: ${detail.check.replaceAll('_', ' ')}.`;
+    }
+  }
+  if (err instanceof Error) return err.message;
+  return 'Could not resume interlock';
+}
+
 export const supervisionService = {
   inspect: (pair: string, logDir?: string) =>
     api.post<SupervisionResult>('/api/supervision/inspect', { pair, log_dir: logDir }),
@@ -148,8 +168,11 @@ export const supervisionService = {
     api.get<InterlockState>('/api/supervision/interlock'),
   engageInterlock: (reason?: string) =>
     api.post<InterlockActionResponse>('/api/supervision/interlock/engage', { reason }),
-  resumeInterlock: (reason?: string) =>
-    api.post<InterlockActionResponse>('/api/supervision/interlock/resume', { reason }),
+  resumeInterlock: (reason: string | undefined, stepUpCode: string) =>
+    api.post<InterlockActionResponse>('/api/supervision/interlock/resume', {
+      reason,
+      step_up_code: stepUpCode,
+    }),
   listProposals: () =>
     api.get<PendingProposalsResponse>('/api/supervision/proposals'),
   approve: (proposalId: string, stepUpCode?: string) =>

@@ -19,11 +19,16 @@ describe('StepUpPrompt', () => {
     expect(verifyBtn).toBeDisabled();
   });
 
-  it('enables verify button when code is 6+ digits', () => {
+  it('enables verify button when code is exactly 6 digits', () => {
     render(<StepUpPrompt onSubmit={vi.fn()} onCancel={vi.fn()} />);
     const input = screen.getByPlaceholderText('000000');
     fireEvent.change(input, { target: { value: '123456' } });
     expect(screen.getByText('Verify')).not.toBeDisabled();
+  });
+
+  it('limits the input to 6 digits', () => {
+    render(<StepUpPrompt onSubmit={vi.fn()} onCancel={vi.fn()} />);
+    expect(screen.getByPlaceholderText('000000')).toHaveAttribute('maxLength', '6');
   });
 
   it('calls onSubmit with the code when verify is clicked', () => {
