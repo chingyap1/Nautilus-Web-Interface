@@ -190,10 +190,13 @@ describe('Mobile Ops ControlsPage (P3)', () => {
     fireEvent.change(screen.getByPlaceholderText(/Why are you doing this/i), {
       target: { value: 'all clear' },
     });
+    fireEvent.change(screen.getByPlaceholderText('000000'), {
+      target: { value: '123456' },
+    });
     fireEvent.click(screen.getByRole('button', { name: 'Confirm resume Supervisor' }));
 
     await waitFor(() => {
-      expect(supervisionService.resumeInterlock).toHaveBeenCalledWith('all clear');
+      expect(supervisionService.resumeInterlock).toHaveBeenCalledWith('all clear', '123456');
     });
   });
 

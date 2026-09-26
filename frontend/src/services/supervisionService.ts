@@ -148,8 +148,11 @@ export const supervisionService = {
     api.get<InterlockState>('/api/supervision/interlock'),
   engageInterlock: (reason?: string) =>
     api.post<InterlockActionResponse>('/api/supervision/interlock/engage', { reason }),
-  resumeInterlock: (reason?: string) =>
-    api.post<InterlockActionResponse>('/api/supervision/interlock/resume', { reason }),
+  resumeInterlock: (reason?: string, stepUpCode?: string) =>
+    api.post<InterlockActionResponse>('/api/supervision/interlock/resume', {
+      reason,
+      step_up_code: stepUpCode,
+    }),
   listProposals: () =>
     api.get<PendingProposalsResponse>('/api/supervision/proposals'),
   approve: (proposalId: string, stepUpCode?: string) =>

@@ -82,7 +82,13 @@ describe('InterlockBanner', () => {
     expect(screen.getByText('Confirm resume — re-enable proposals')).toBeInTheDocument();
     expect(onResume).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText('Confirm resume — re-enable proposals'));
-    expect(onResume).toHaveBeenCalled();
+    expect(screen.getByText('Step-up authentication required')).toBeInTheDocument();
+    expect(onResume).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByPlaceholderText('000000'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByText('Verify'));
+    expect(onResume).toHaveBeenCalledWith('123456');
   });
 
   it('shows extended metadata from state when no actionResponse', () => {

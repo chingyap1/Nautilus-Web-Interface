@@ -1,13 +1,16 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ShieldCheck, ShieldOff, AlertTriangle } from 'lucide-react';
 import type { InterlockState, InterlockActionResponse } from '@/services/supervisionService';
+import StepUpPrompt from './StepUpPrompt';
 
 interface InterlockBannerProps {
   state: InterlockState | null;
   actionResponse: InterlockActionResponse | null;
   loading: boolean;
   onEngage: () => void;
-  onResume: () => void;
+  onResume: (stepUpCode: string) => void;
+  resumeLoading?: boolean;
+  resumeError?: string | null;
 }
 
 function formatTimestamp(value: string | null | undefined): string {
@@ -25,8 +28,11 @@ export default function InterlockBanner({
   loading,
   onEngage,
   onResume,
+  resumeLoading,
+  resumeError,
 }: InterlockBannerProps) {
   const [confirmResume, setConfirmResume] = useState(false);
+  const [showStepUp, setShowStepUp] = useState(false);
   const role = localStorage.getItem('nautilus_role');
   const isOperator = role === 'operator' || role === 'admin';
   const isAdmin = role === 'admin';
@@ -35,13 +41,19 @@ export default function InterlockBanner({
   // Fail-closed: if state is null/loading, treat as paused (safe default per D5)
   const displayPaused = paused || state == null;
 
+  useEffect(() => {
+    if (!displayPaused) {
+      setConfirmResume(false);
+      setShowStepUp(false);
+    }
+  }, [displayPaused]);
+
   const handleResume = () => {
     if (!confirmResume) {
       setConfirmResume(true);
       return;
     }
-    setConfirmResume(false);
-    onResume();
+    setShowStepUp(true);
   };
 
   return (
@@ -117,7 +129,7 @@ export default function InterlockBanner({
               Pause Supervisor commands
             </button>
           )}
-          {displayPaused && isAdmin && (
+          {displayPaused && isAdmin && !showStepUp && (
             <button
               type="button"
               onClick={handleResume}
@@ -137,6 +149,19 @@ export default function InterlockBanner({
           )}
         </div>
       </div>
+      {displayPaused && isAdmin && showStepUp && (
+        <div className="border-t border-white/5 px-5 pb-5">
+          <StepUpPrompt
+            loading={resumeLoading}
+            error={resumeError}
+            onSubmit={onResume}
+            onCancel={() => {
+              setConfirmResume(false);
+              setShowStepUp(false);
+            }}
+          />
+        </div>
+      )}
     </section>
   );
 }

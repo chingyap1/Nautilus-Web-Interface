@@ -4,6 +4,7 @@ import { AlertTriangle, RefreshCw, Radar } from 'lucide-react';
 import nautilusService, { type AgentSnapshot } from '@/services/nautilusService';
 import { copilotService } from '@/services/copilotService';
 import { supervisionService, type SupervisionResult, type InterlockState, type InterlockActionResponse, type SupervisionProposal } from '@/services/supervisionService';
+import { ApiError } from '@/lib/api';
 
 import InterlockBanner from '@/components/supervision/InterlockBanner';
 import AgentHealthCard from '@/components/supervision/AgentHealthCard';
@@ -25,6 +26,8 @@ export default function SupervisionPage() {
   const [interlockState, setInterlockState] = useState<InterlockState | null>(null);
   const [interlockAction, setInterlockAction] = useState<InterlockActionResponse | null>(null);
   const [interlockLoading, setInterlockLoading] = useState(true);
+  const [resumeLoading, setResumeLoading] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   // Pending proposals — polled every 10s
   const [proposals, setProposals] = useState<SupervisionProposal[]>([]);
@@ -140,13 +143,26 @@ export default function SupervisionPage() {
     }
   }, [loadInterlock, loadProposals]);
 
-  const handleResume = useCallback(async () => {
+  const handleResume = useCallback(async (stepUpCode: string) => {
+    setResumeLoading(true);
+    setResumeError(null);
     try {
-      const resp = await supervisionService.resumeInterlock('Manual resume via NWI Supervision page');
+      const resp = await supervisionService.resumeInterlock(
+        'Manual resume via NWI Supervision page',
+        stepUpCode,
+      );
       setInterlockAction(resp);
       setInterlockState({ state: resp.state });
-    } catch {
+    } catch (err) {
+      if (err instanceof ApiError && typeof err.detail === 'object' && err.detail) {
+        const detail = err.detail as { message?: string };
+        setResumeError(detail.message ?? err.message);
+      } else {
+        setResumeError(err instanceof Error ? err.message : 'Could not resume interlock');
+      }
       void loadInterlock();
+    } finally {
+      setResumeLoading(false);
     }
   }, [loadInterlock]);
 
@@ -164,6 +180,8 @@ export default function SupervisionPage() {
         loading={interlockLoading}
         onEngage={handleEngage}
         onResume={handleResume}
+        resumeLoading={resumeLoading}
+        resumeError={resumeError}
       />
 
       {/* Inspect error */}
