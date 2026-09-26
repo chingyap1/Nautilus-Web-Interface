@@ -9,13 +9,18 @@ vi.mock('@/services/nautilusService', () => ({
   },
 }));
 
-vi.mock('@/services/supervisionService', () => ({
-  supervisionService: {
-    getInterlock: vi.fn(),
-    engageInterlock: vi.fn(),
-    resumeInterlock: vi.fn(),
-  },
-}));
+vi.mock('@/services/supervisionService', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/supervisionService')>();
+  return {
+    ...actual,
+    supervisionService: {
+      ...actual.supervisionService,
+      getInterlock: vi.fn(),
+      engageInterlock: vi.fn(),
+      resumeInterlock: vi.fn(),
+    },
+  };
+});
 
 vi.mock('@/mobile/useOperationsSnapshot', () => ({
   useOperationsSnapshot: vi.fn(),
@@ -25,6 +30,7 @@ import ControlsPage from '@/mobile/pages/ControlsPage';
 import nautilusService from '@/services/nautilusService';
 import { supervisionService } from '@/services/supervisionService';
 import { useOperationsSnapshot } from '@/mobile/useOperationsSnapshot';
+import { ApiError } from '@/lib/api';
 
 const paperSnapshot = {
   generated_at: '2026-08-08T00:00:00Z',
@@ -198,6 +204,32 @@ describe('Mobile Ops ControlsPage (P3)', () => {
     await waitFor(() => {
       expect(supervisionService.resumeInterlock).toHaveBeenCalledWith('all clear', '123456');
     });
+  });
+
+  it('shows the failing resume precondition', async () => {
+    localStorage.setItem('nautilus_role', 'admin');
+    vi.mocked(supervisionService.getInterlock).mockResolvedValue({ state: 'paused' });
+    vi.mocked(supervisionService.resumeInterlock).mockRejectedValue(
+      new ApiError(409, 'HTTP 409', {
+        reason: 'resume_precondition_failed',
+        check: 'account_not_reconciled',
+      }),
+    );
+
+    render(<ControlsPage />);
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Resume Supervisor commands' })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Supervisor commands' }));
+    fireEvent.change(screen.getByPlaceholderText(/Why are you doing this/i), {
+      target: { value: 'all clear' },
+    });
+    fireEvent.change(screen.getByPlaceholderText('000000'), {
+      target: { value: '123456' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm resume Supervisor' }));
+
+    expect(await screen.findByText('Expected agent account is not reconciled.')).toBeInTheDocument();
   });
 
   it('tells non-admin that resume requires admin when paused', async () => {

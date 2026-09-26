@@ -18,7 +18,7 @@ export default function StepUpPrompt({ onSubmit, onCancel, loading, error }: Ste
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (code.length >= 6) {
+    if (code.length === 6) {
       onSubmit(code);
     }
   };
@@ -47,7 +47,7 @@ export default function StepUpPrompt({ onSubmit, onCancel, loading, error }: Ste
           type="text"
           inputMode="numeric"
           pattern="[0-9]*"
-          maxLength={8}
+          maxLength={6}
           placeholder="000000"
           value={code}
           onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
@@ -55,7 +55,7 @@ export default function StepUpPrompt({ onSubmit, onCancel, loading, error }: Ste
         />
         <button
           type="submit"
-          disabled={code.length < 6 || loading}
+          disabled={code.length !== 6 || loading}
           className="rounded-lg border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-40"
         >
           {loading ? 'Verifying…' : 'Verify'}

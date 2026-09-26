@@ -1,4 +1,4 @@
-import api from '@/lib/api';
+import api, { ApiError } from '@/lib/api';
 
 // ---------------------------------------------------------------------------
 // Types — mirror the FastAPI response shapes exactly (docs/supervision_ui_plan.md §3)
@@ -139,6 +139,26 @@ export interface AuditEntry {
 export interface AuditLogResponse {
   entries: AuditEntry[];
   count: number;
+}
+
+const RESUME_PRECONDITION_MESSAGES: Record<string, string> = {
+  agent_offline: 'Expected agent heartbeat is offline or stale.',
+  execution_mode_not_paper: 'Expected agent is not running in paper mode.',
+  account_not_reconciled: 'Expected agent account is not reconciled.',
+  kill_switch_active: 'Expected agent kill switch is active.',
+};
+
+export function formatInterlockResumeError(err: unknown): string {
+  if (err instanceof ApiError && typeof err.detail === 'object' && err.detail) {
+    const detail = err.detail as { check?: string; message?: string; reason?: string };
+    if (detail.message) return detail.message;
+    if (detail.reason === 'resume_precondition_failed' && detail.check) {
+      return RESUME_PRECONDITION_MESSAGES[detail.check]
+        ?? `Resume precondition failed: ${detail.check.replaceAll('_', ' ')}.`;
+    }
+  }
+  if (err instanceof Error) return err.message;
+  return 'Could not resume interlock';
 }
 
 export const supervisionService = {

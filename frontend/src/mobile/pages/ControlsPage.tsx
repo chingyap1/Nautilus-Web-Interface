@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import nautilusService, { type Strategy } from '@/services/nautilusService';
 import {
+  formatInterlockResumeError,
   supervisionService,
   type InterlockActionResponse,
   type InterlockState,
@@ -172,7 +173,7 @@ export default function ControlsPage() {
       setReason('');
       setStepUpCode('');
     } catch (err) {
-      setActionError(getErrorMessage(err));
+      setActionError(formatInterlockResumeError(err));
       void loadInterlock();
     } finally {
       setBusy(false);

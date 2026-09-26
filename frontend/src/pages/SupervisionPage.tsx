@@ -3,8 +3,7 @@ import { AlertTriangle, RefreshCw, Radar } from 'lucide-react';
 
 import nautilusService, { type AgentSnapshot } from '@/services/nautilusService';
 import { copilotService } from '@/services/copilotService';
-import { supervisionService, type SupervisionResult, type InterlockState, type InterlockActionResponse, type SupervisionProposal } from '@/services/supervisionService';
-import { ApiError } from '@/lib/api';
+import { formatInterlockResumeError, supervisionService, type SupervisionResult, type InterlockState, type InterlockActionResponse, type SupervisionProposal } from '@/services/supervisionService';
 
 import InterlockBanner from '@/components/supervision/InterlockBanner';
 import AgentHealthCard from '@/components/supervision/AgentHealthCard';
@@ -154,12 +153,7 @@ export default function SupervisionPage() {
       setInterlockAction(resp);
       setInterlockState({ state: resp.state });
     } catch (err) {
-      if (err instanceof ApiError && typeof err.detail === 'object' && err.detail) {
-        const detail = err.detail as { message?: string };
-        setResumeError(detail.message ?? err.message);
-      } else {
-        setResumeError(err instanceof Error ? err.message : 'Could not resume interlock');
-      }
+      setResumeError(formatInterlockResumeError(err));
       void loadInterlock();
     } finally {
       setResumeLoading(false);
@@ -180,6 +174,7 @@ export default function SupervisionPage() {
         loading={interlockLoading}
         onEngage={handleEngage}
         onResume={handleResume}
+        onResumeReset={() => setResumeError(null)}
         resumeLoading={resumeLoading}
         resumeError={resumeError}
       />

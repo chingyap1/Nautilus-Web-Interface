@@ -9,6 +9,7 @@ interface InterlockBannerProps {
   loading: boolean;
   onEngage: () => void;
   onResume: (stepUpCode: string) => void;
+  onResumeReset?: () => void;
   resumeLoading?: boolean;
   resumeError?: string | null;
 }
@@ -28,6 +29,7 @@ export default function InterlockBanner({
   loading,
   onEngage,
   onResume,
+  onResumeReset,
   resumeLoading,
   resumeError,
 }: InterlockBannerProps) {
@@ -50,6 +52,7 @@ export default function InterlockBanner({
 
   const handleResume = () => {
     if (!confirmResume) {
+      onResumeReset?.();
       setConfirmResume(true);
       return;
     }
@@ -156,6 +159,7 @@ export default function InterlockBanner({
             error={resumeError}
             onSubmit={onResume}
             onCancel={() => {
+              onResumeReset?.();
               setConfirmResume(false);
               setShowStepUp(false);
             }}
