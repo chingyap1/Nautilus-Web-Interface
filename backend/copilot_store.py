@@ -501,10 +501,9 @@ async def transition_eligibility(workspace: dict[str, Any]) -> dict[str, Any]:
     rule = copilot_promotion.TRANSITIONS_UI.get(promotion.state)
     kind = rule[1] if rule else None
     async with aiosqlite.connect(database.DB_PATH) as db:
-        approved = bool(kind and await _has_current_approval(db, workspace["id"], kind))
-        evidence_ok, evidence_reason = await _midgate_evidence_ok(
-            db, workspace["id"], kind, promotion
-        )
+        artifact = await _current_gate_artifact(db, workspace["id"], kind) if kind else None
+    approved = bool(artifact and artifact["decision"] == "approved")
+    evidence_ok, evidence_reason = _midgate_evidence_ok(artifact, kind, promotion)
     return copilot_promotion.transition_eligibility(
         promotion,
         artifact_approved=approved,
@@ -543,16 +542,17 @@ async def advance_lifecycle(workspace: dict[str, Any], owner_id: str) -> dict[st
                 await db.rollback()
                 return None
             target, kind = rule
-            if not await _has_current_approval(db, workspace["id"], kind):
+            # Resolve once under the write transaction: approval, evidence and
+            # recorded hash must all refer to this exact immutable revision.
+            artifact = await _current_gate_artifact(db, workspace["id"], kind)
+            if not artifact or artifact["decision"] != "approved":
                 await db.rollback()
                 return None
-            evidence_ok, _ = await _midgate_evidence_ok(
-                db, workspace["id"], kind, promotion
-            )
+            evidence_ok, _ = _midgate_evidence_ok(artifact, kind, promotion)
             if not evidence_ok:
                 await db.rollback()
                 return None
-            payload_hash = await _current_artifact_hash(db, workspace["id"], kind)
+            payload_hash = artifact["content_hash"]
             try:
                 updated_promotion = copilot_promotion.advance_promotion(
                     promotion,
@@ -649,15 +649,14 @@ async def create_from_supervision(
     }
 
 
-async def _midgate_evidence_ok(
-    db: aiosqlite.Connection,
-    workspace_id: str,
+def _midgate_evidence_ok(
+    artifact: dict[str, Any] | None,
     kind: str | None,
     promotion: Any,
 ) -> tuple[bool, str]:
     """Extra evidence checks for S6 mid-gates beyond artifact approval."""
+    content = artifact["content"] if artifact else None
     if kind == "validation_report":
-        content = await _current_artifact_content(db, workspace_id, kind)
         if not content:
             return False, "Run validation to produce a validation_report first."
         try:
@@ -672,7 +671,6 @@ async def _midgate_evidence_ok(
     if kind == "candidate_bundle":
         if not promotion.candidate_bundle:
             return False, "Create a candidate bundle on this promotion first."
-        content = await _current_artifact_content(db, workspace_id, kind)
         if not content:
             return False, "Candidate bundle artifact missing — create the bundle again."
         try:
@@ -688,49 +686,31 @@ async def _midgate_evidence_ok(
     return True, ""
 
 
-async def _current_artifact_content(
+async def _current_gate_artifact(
     db: aiosqlite.Connection, workspace_id: str, kind: str
-) -> str | None:
+) -> dict[str, Any] | None:
+    """Select one current revision and its latest decision, including no decision.
+
+    Never filter artifacts by approval: that would let an older approved
+    artifact authorize a newer unapproved one. Row IDs break timestamp ties
+    deterministically without changing the existing most-recent-artifact policy.
+    """
     async with db.execute(
-        """SELECT r.content FROM copilot_artifacts a
+        """SELECT r.id, r.content, r.content_hash,
+                  (SELECT p.decision FROM copilot_approvals p
+                   WHERE p.artifact_revision_id = r.id
+                   ORDER BY p.decided_at DESC, p.rowid DESC LIMIT 1)
+           FROM copilot_artifacts a
            JOIN copilot_artifact_revisions r
              ON r.artifact_id = a.id AND r.revision = a.current_revision
            WHERE a.workspace_id = ? AND a.kind = ?
-           ORDER BY a.updated_at DESC LIMIT 1""",
+           ORDER BY a.updated_at DESC, a.rowid DESC LIMIT 1""",
         (workspace_id, kind),
     ) as cursor:
         row = await cursor.fetchone()
-    return row[0] if row else None
-
-
-async def _has_current_approval(db: aiosqlite.Connection, workspace_id: str, kind: str) -> bool:
-    """A current revision is approved only when its latest decision is approval."""
-    async with db.execute(
-        """SELECT p.decision FROM copilot_artifacts a
-           JOIN copilot_artifact_revisions r ON r.artifact_id = a.id AND r.revision = a.current_revision
-           JOIN copilot_approvals p ON p.artifact_revision_id = r.id
-           WHERE a.workspace_id = ? AND a.kind = ?
-           ORDER BY p.decided_at DESC, p.rowid DESC LIMIT 1""",
-        (workspace_id, kind),
-    ) as cursor:
-        decision = await cursor.fetchone()
-    return decision is not None and decision[0] == "approved"
-
-
-async def _current_artifact_hash(
-    db: aiosqlite.Connection, workspace_id: str, kind: str
-) -> str | None:
-    """Return content_hash of the current revision for an artifact kind."""
-    async with db.execute(
-        """SELECT r.content_hash FROM copilot_artifacts a
-           JOIN copilot_artifact_revisions r
-             ON r.artifact_id = a.id AND r.revision = a.current_revision
-           WHERE a.workspace_id = ? AND a.kind = ?
-           ORDER BY a.updated_at DESC LIMIT 1""",
-        (workspace_id, kind),
-    ) as cursor:
-        row = await cursor.fetchone()
-    return row[0] if row else None
+    if row is None:
+        return None
+    return {"revision_id": row[0], "content": row[1], "content_hash": row[2], "decision": row[3]}
 
 
 async def list_transitions(workspace_id: str) -> list[dict[str, Any]]:
