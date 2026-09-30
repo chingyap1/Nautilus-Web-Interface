@@ -78,6 +78,16 @@ export interface Position {
   ts_closed: number | null;
 }
 
+export interface AgentPosition {
+  instrument_id: string | null;
+  side: string | null;
+  quantity: number | null;
+  entry_price: number | null;
+  mark_price: number | null;
+  mark_source: string | null; // 'quote' | 'trade' | 'none'
+  unrealised_pnl: number | null;
+}
+
 export interface AgentSnapshot {
   agent_id: string;
   pair: string;
@@ -91,6 +101,8 @@ export interface AgentSnapshot {
   balance_usd: number;
   unrealised_pnl: number;
   open_positions: number;
+  /** Latest per-position snapshot (drill-down behind `unrealised_pnl`); absent on older agents. */
+  positions?: AgentPosition[];
   heartbeat_age_seconds: number | null;
   freshness: 'online' | 'stale';
   source: 'nautilus_agent';
