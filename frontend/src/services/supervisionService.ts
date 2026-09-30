@@ -4,6 +4,16 @@ import api, { ApiError } from '@/lib/api';
 // Types — mirror the FastAPI response shapes exactly (docs/supervision_ui_plan.md §3)
 // ---------------------------------------------------------------------------
 
+export interface AgentHealthPosition {
+  instrument_id: string | null;
+  side: string | null;
+  quantity: number | null;
+  entry_price: number | null;
+  mark_price: number | null;
+  mark_source: string | null; // 'quote' | 'trade' | 'none'
+  unrealised_pnl: number | null;
+}
+
 export interface AgentHealth {
   agent_id: string;
   pair: string;
@@ -17,6 +27,8 @@ export interface AgentHealth {
   balance_usd: number;
   unrealised_pnl: number;
   open_positions: number;
+  /** Latest per-position snapshot; empty when the agent publishes no positions. */
+  positions?: AgentHealthPosition[];
   source_path: string | null;
 }
 

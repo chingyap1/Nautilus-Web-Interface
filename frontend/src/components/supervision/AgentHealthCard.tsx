@@ -24,6 +24,11 @@ function formatMoney(value: number | null | undefined): string {
   }).format(value);
 }
 
+function formatQty(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(value)) return '—';
+  return value.toLocaleString('en-US', { maximumFractionDigits: 8 });
+}
+
 function formatAge(seconds: number | null | undefined): string {
   if (seconds == null || !Number.isFinite(seconds)) return 'Unknown';
   if (seconds < 60) return `${Math.round(seconds)}s ago`;
@@ -104,6 +109,53 @@ export default function AgentHealthCard({ health }: { health: AgentHealth | null
           <div className="mt-1 text-sm font-semibold text-white">{health.open_positions}</div>
         </div>
       </div>
+
+      {health.positions && health.positions.length > 0 && (
+        <div className="mt-3 border-t border-white/6 pt-3">
+          <div className="mb-2 text-[10px] uppercase tracking-wide text-slate-600">
+            Position detail · latest snapshot
+          </div>
+          <ul className="space-y-1.5">
+            {health.positions.map((pos, i) => (
+              <li
+                key={`${pos.instrument_id ?? 'row'}-${i}`}
+                className="flex items-center justify-between gap-2 text-xs"
+              >
+                <span className="text-slate-300">
+                  <span
+                    className={
+                      pos.side === 'LONG'
+                        ? 'text-emerald-300'
+                        : pos.side === 'SHORT'
+                          ? 'text-rose-300'
+                          : 'text-slate-400'
+                    }
+                  >
+                    {pos.side ?? '—'}
+                  </span>{' '}
+                  <span className="text-slate-500">{formatQty(pos.quantity)}</span>{' '}
+                  <span className="text-slate-200">{pos.instrument_id ?? '—'}</span>
+                </span>
+                <span className="text-slate-500">
+                  @{formatMoney(pos.entry_price)} →{' '}
+                  {pos.mark_price != null ? formatMoney(pos.mark_price) : '—'}
+                  <span
+                    className={`ml-2 ${
+                      pos.unrealised_pnl == null
+                        ? 'text-slate-500'
+                        : pos.unrealised_pnl >= 0
+                          ? 'text-emerald-300'
+                          : 'text-rose-300'
+                    }`}
+                  >
+                    {pos.unrealised_pnl == null ? 'uP&L —' : formatMoney(pos.unrealised_pnl)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mt-3 border-t border-white/6 pt-3 text-xs text-slate-600">
         {health.execution_mode} mode · {health.num_fills} fills

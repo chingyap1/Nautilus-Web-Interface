@@ -85,6 +85,17 @@ def test_operations_snapshot_reports_agent_authority(client, tmp_path, monkeypat
         "balance_usd": 100123.45,
         "unrealised_pnl": 55.0,
         "open_positions": 1,
+        "positions": [
+            {
+                "instrument_id": "BTC/USD.KRAKEN",
+                "side": "LONG",
+                "quantity": 0.001,
+                "entry_price": 95000.0,
+                "mark_price": 95550.0,
+                "mark_source": "quote",
+                "unrealised_pnl": 55.0,
+            }
+        ],
     }
     (tmp_path / "heartbeat_XBTUSD.json").write_text(json.dumps(heartbeat), encoding="utf-8")
     command_dir = tmp_path / "commands"
@@ -108,6 +119,9 @@ def test_operations_snapshot_reports_agent_authority(client, tmp_path, monkeypat
     }
     assert body["agents"][0]["source"] == "nautilus_agent"
     assert body["agents"][0]["balance_usd"] == 100123.45
+    # Per-position drill-down rides along with the heartbeat, unmodified.
+    assert body["agents"][0]["positions"][0]["instrument_id"] == "BTC/USD.KRAKEN"
+    assert body["agents"][0]["positions"][0]["unrealised_pnl"] == 55.0
     assert body["command_pipeline"]["pending_files"] == 1
 
 
