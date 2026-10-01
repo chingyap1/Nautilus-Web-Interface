@@ -21,6 +21,15 @@ ARG VITE_ADMIN_DB_API_URL=
 
 RUN npm run build
 
+# -- Dist artifact -----------------------------------------------------------
+# Export-only stage for CI: `docker buildx build --target dist
+# --output type=local,dest=<dir>` drops the prebuilt Vite bundle at
+# <dir>/dist. CI then assembles the deploy image from that artifact with
+# Dockerfile.deploy (COPY-only) so `npm run build` never runs under QEMU
+# cross-architecture emulation on ARM64 runners.
+FROM scratch AS dist
+COPY --from=builder /app/dist /dist
+
 # -- Production image --------------------------------------------------------
 FROM nginx:alpine
 

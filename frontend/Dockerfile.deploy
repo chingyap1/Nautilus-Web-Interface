@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+# Deploy-only Dockerfile for the GHCR nwi-frontend image (CI builds this,
+# not the default Dockerfile target).
+#
+# The Vite bundle is built natively on the runner's own architecture in a
+# separate CI step (`docker buildx build --target dist --output
+# type=local` against Dockerfile). Running `npm run build` under QEMU
+# cross-architecture emulation (ARM64 runner -> linux/amd64 image) made the
+# Go esbuild service crash intermittently ("fatal error: lfstack.push" ->
+# vite "The service was stopped: write EPIPE"). This stage is COPY-only —
+# zero RUN steps — so nothing is ever executed under emulation.
+#
+# Build context (assembled by CI in nwi-frontend-deploy-ctx/):
+#   dist/              prebuilt Vite output (the `dist` stage, verbatim)
+#   nginx-proxy.conf   reverse-proxy config (copied from this directory)
+FROM nginx:alpine
+
+COPY dist/ /usr/share/nginx/html
+
+# Proxy config: forwards /api, /ws, and admin endpoints to backend services
+# (same file the default Dockerfile target uses).
+COPY nginx-proxy.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 80
+
+CMD ["nginx", "-g", "daemon off;"]
